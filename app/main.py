@@ -1,17 +1,16 @@
 """
-main.py — ObituaryWatch v3. Three routes only.
+main.py — ObituaryWatch v3.
 GET  /        → paste a Wikipedia link
-GET  /person  → person card (data fetched client-side to avoid 403s)
+GET  /person  → person card (JS fetches data client-side)
 POST /watch   → save email + wiki_title
 """
 
-import os
-from fastapi import FastAPI, Request, HTTPException
+import os, re
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import re
 
 from app.db import init_db, add_watch
 
@@ -26,9 +25,11 @@ def startup():
     init_db()
 
 def title_from_url(url: str):
-    url = url.strip()
-    m = re.search(r"wikipedia\.org/wiki/([^#?&\s]+)", url)
-    return m.group(1) if m else None
+    """Extract (lang, title) from any Wikipedia URL."""
+    m = re.search(r"([a-z]{2,3})\.wikipedia\.org/wiki/([^#?&\s]+)", url.strip())
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
 
 def head(title="ObituaryWatch"):
     return f"""<!DOCTYPE html>
@@ -105,7 +106,9 @@ function go() {
   const v = document.getElementById('url').value.trim();
   const e = document.getElementById('err');
   if (!v) { e.textContent = 'paste a Wikipedia link first.'; return; }
-  if (!v.includes('wikipedia.org/wiki/')) { e.textContent = "that doesn't look like a Wikipedia link."; return; }
+  if (!v.includes('wikipedia.org/wiki/')) {
+    e.textContent = "that doesn't look like a Wikipedia link."; return;
+  }
   e.textContent = '';
   window.location.href = '/person?url=' + encodeURIComponent(v);
 }
@@ -118,155 +121,23 @@ function go() {
 def person_page(url: str = ""):
     if not url:
         return RedirectResponse("/")
-    title = title_from_url(url)
+    lang, title = title_from_url(url)
     if not title:
         return RedirectResponse("/")
 
-    safe_title = title.replace("'", "\\'").replace('"', '')
+    # Escape for JS string literals
+    safe_title = title.replace("\\", "\\\\").replace("'", "\\'")
+    safe_lang  = lang
 
-    return HTMLResponse(head("ObituaryWatch — loading...") + f"""
+    return HTMLResponse(head("ObituaryWatch") + f"""
 <a class="back" href="/">&#8592; back</a>
 <div id="main"></div>
 
 <script>
 const TITLE = '{safe_title}';
-const YEAR  = new Date().getFullYear();
-
-const OCCS = [
-  ['Actor',        ['actor','actress']],
-  ['Musician',     ['musician','singer','songwriter','rapper','composer','guitarist']],
-  ['Director',     ['director','filmmaker']],
-  ['Writer',       ['writer','author','novelist','poet','screenwriter','journalist']],
-  ['Politician',   ['politician','president','prime minister','senator','governor']],
-  ['Athlete',      ['athlete','footballer','basketball player','tennis player','boxer']],
-  ['Scientist',    ['scientist','physicist','biologist','astronomer','mathematician']],
-  ['Artist',       ['artist','painter','sculptor','photographer']],
-  ['Comedian',     ['comedian','comic']],
-  ['Entrepreneur', ['entrepreneur','businessman','businesswoman','ceo']],
-  ['Model',        ['model']],
-];
-
-function occ(desc) {{
-  if (!desc) return '';
-  const d = desc.toLowerCase();
-  for (const [l,ks] of OCCS) if (ks.some(k=>d.includes(k))) return l;
-  return desc.split(/[,.(]/)[0].trim().slice(0,30);
-}}
-
-function birthDate(text) {{
-  if (!text) return null;
-  const m = text.match(/\\(born\\s+([A-Za-z]+\\s+\\d{{1,2}},?\\s+\\d{{4}}|\\d{{1,2}}\\s+[A-Za-z]+\\s+\\d{{4}}|\\d{{4}})/i);
-  return m ? m[1] : null;
-}}
-
-function birthYear(text) {{
-  if (!text) return null;
-  const m = text.match(/born.*?(\\d{{4}})/i);
-  return m ? parseInt(m[1]) : null;
-}}
-
-// Show skeleton while loading
-document.getElementById('main').innerHTML = `
-  <div class="card">
-    <div class="person-top">
-      <div class="photo-placeholder skeleton" style="border:none"></div>
-      <div style="flex:1;padding-top:6px">
-        <div class="skeleton" style="height:20px;width:55%;margin-bottom:10px;border-radius:10px"></div>
-        <div class="skeleton" style="height:13px;width:35%;border-radius:6px"></div>
-      </div>
-    </div>
-    <div class="skeleton" style="height:13px;margin-bottom:8px;border-radius:6px"></div>
-    <div class="skeleton" style="height:13px;width:70%;border-radius:6px"></div>
-  </div>`;
-
-async function load() {{
-  try {{
-    const url = 'https://en.wikipedia.org/w/api.php?action=query' +
-      '&titles=' + encodeURIComponent(TITLE.replace(/_/g,' ')) +
-      '&prop=extracts|pageimages|description' +
-      '&exintro=true&explaintext=true&pithumbsize=200&redirects=true' +
-      '&format=json&origin=*';
-    const data  = await (await fetch(url)).json();
-    const page  = Object.values(data.query.pages)[0];
-
-    if (page.missing !== undefined) {{
-      document.getElementById('main').innerHTML =
-        '<div style="text-align:center;color:#5a5650;padding:60px 0;font-style:italic">Page not found on Wikipedia.</div>';
-      return;
-    }}
-
-    const name    = page.title || TITLE.replace(/_/g,' ');
-    const desc    = page.description || '';
-    const extract = (page.extract || '').slice(0,320);
-    const thumb   = page.thumbnail?.source || '';
-    const job     = occ(desc);
-    const bd      = birthDate(extract);
-    const by      = birthYear(extract);
-    const age     = by ? YEAR - by : null;
-
-    document.title = name + ' — ObituaryWatch';
-
-    const photo = thumb
-      ? `<img src="${{thumb}}" alt="${{name}}" class="photo">`
-      : `<div class="photo-placeholder">${{name.charAt(0).toUpperCase()}}</div>`;
-
-    let rows = '';
-    if (job) rows += `<div class="info-row"><span class="info-key">Occupation</span><span class="info-val">${{job}}</span></div>`;
-    if (bd)  rows += `<div class="info-row"><span class="info-key">Born</span><span class="info-val">${{bd}}${{age?' &middot; age '+age:''}}</span></div>`;
-    else if (age) rows += `<div class="info-row"><span class="info-key">Age</span><span class="info-val">${{age}}</span></div>`;
-
-    const safeN = name.replace(/'/g,"\\'");
-    const first = name.split(' ')[0];
-
-    document.getElementById('main').innerHTML = `
-      <div class="card">
-        <div class="person-top">
-          ${{photo}}
-          <div>
-            <div class="person-name">${{name}}</div>
-            <div class="person-occ">${{desc}}</div>
-          </div>
-        </div>
-        ${{rows}}
-        ${{extract ? '<div class="extract">'+extract+'...</div>' : ''}}
-        <a class="wiki-link" href="https://en.wikipedia.org/wiki/${{TITLE}}" target="_blank">view on Wikipedia &rarr;</a>
-      </div>
-      <div class="card">
-        <div class="watch-label">Get notified when ${{first}} dies</div>
-        <input class="input" id="email" type="email" placeholder="your@email.com"
-          onkeydown="if(event.key==='Enter')doWatch('${{safeN}}')">
-        <button class="btn watch-btn" onclick="doWatch('${{safeN}}')">Watch</button>
-        <div class="err" id="err"></div>
-        <div class="success" id="ok">&#10003; You're watching ${{name}}. We'll email you when Wikipedia registers their death.</div>
-      </div>`;
-
-  }} catch(e) {{
-    console.error(e);
-    document.getElementById('main').innerHTML =
-      '<div style="text-align:center;color:#5a5650;padding:60px 0;font-style:italic">Error loading. Please try again.</div>';
-  }}
-}}
-
-async function doWatch(name) {{
-  const email = document.getElementById('email').value.trim();
-  const err   = document.getElementById('err');
-  if (!email || !email.includes('@')) {{ err.textContent = 'enter a valid email.'; return; }}
-  err.textContent = '';
-  const r = await fetch('/watch', {{
-    method:'POST', headers:{{'Content-Type':'application/json'}},
-    body: JSON.stringify({{wiki_title: TITLE, email}})
-  }});
-  if (r.ok) {{
-    document.getElementById('email').style.display = 'none';
-    document.querySelector('.watch-btn').style.display = 'none';
-    document.getElementById('ok').style.display = 'block';
-  }} else {{
-    err.textContent = 'something went wrong. try again.';
-  }}
-}}
-
-load();
+const LANG  = '{safe_lang}';
 </script>
+<script src="/static/person.js"></script>
 """ + FOOT)
 
 # ── Save watch ────────────────────────────────────────────────────────────────
@@ -274,6 +145,7 @@ load();
 class WatchReq(BaseModel):
     wiki_title: str
     email:      str
+    lang:       str = "en"
 
 @app.post("/watch")
 def save_watch(req: WatchReq):
@@ -281,5 +153,7 @@ def save_watch(req: WatchReq):
         raise HTTPException(400, "Invalid email")
     if not req.wiki_title:
         raise HTTPException(400, "Invalid title")
-    add_watch(req.wiki_title.strip(), req.email.strip().lower())
+    # Store lang prefix with title so watcher knows which Wikipedia to monitor
+    full_title = f"{req.lang}:{req.wiki_title.strip()}"
+    add_watch(full_title, req.email.strip().lower())
     return {"ok": True}

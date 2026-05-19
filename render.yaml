@@ -1,31 +1,9 @@
-# render.yaml — Deploy ObituaryWatch free on Render.com
-# Push to GitHub, connect repo on render.com, and it auto-deploys both services.
-
 services:
-  # The API + web UI (free tier web service)
   - type: web
-    name: obituary-watch-api
+    name: obituary-watch
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: DB_PATH
-        value: /var/data/obituary_watch.db
-    disk:
-      name: data
-      mountPath: /var/data
-      sizeGB: 1   # free tier allows 1GB persistent disk
-
-  # The background watcher (free tier background worker)
-  - type: worker
-    name: obituary-watch-watcher
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m app.watcher
-    envVars:
-      - key: DB_PATH
-        value: /var/data/obituary_watch.db
-    disk:
-      name: data
-      mountPath: /var/data
-      sizeGB: 1
+      - key: DATABASE_URL
+        sync: false  # will be set manually in Render dashboard
