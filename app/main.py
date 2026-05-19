@@ -5,10 +5,12 @@ GET  /person  → person card (JS fetches data client-side)
 POST /watch   → save email + wiki_title
 """
 
-import os, re
+import os, re, logging
+
+log = logging.getLogger(__name__)
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -156,11 +158,12 @@ def save_watch(req: WatchReq):
         raise HTTPException(400, "Invalid title")
     full_title = f"{req.lang}:{req.wiki_title.strip()}"
     add_watch(full_title, req.email.strip().lower())
-    # Send confirmation email
     wiki_url = f"https://{req.lang}.wikipedia.org/wiki/{req.wiki_title}"
-    send_watch_confirmation(
+    log.info(f"Watch saved: {full_title} for {req.email} — sending confirmation email")
+    result = send_watch_confirmation(
         to_email=req.email.strip().lower(),
         person_name=req.wiki_title.replace("_", " "),
         wiki_url=wiki_url,
     )
+    log.info(f"Confirmation email result: {result}")
     return {"ok": True}

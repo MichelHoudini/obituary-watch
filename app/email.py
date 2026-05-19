@@ -155,6 +155,8 @@ def send_watch_confirmation(
             },
             timeout=10,
         )
+        log.info(f"Confirmation email to {to_email}: status={r.status_code} body={r.text[:200]}")
         return r.status_code in (200, 201)
-    except Exception:
+    except Exception as e:
+        log.error(f"Confirmation email failed: {e}")
         return False
