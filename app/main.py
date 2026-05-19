@@ -1,283 +1,285 @@
 """
-main.py — FastAPI application.
-CSS and JS served as static files — no f-string escaping issues.
+main.py — ObituaryWatch v3. Three routes only.
+GET  /        → paste a Wikipedia link
+GET  /person  → person card (data fetched client-side to avoid 403s)
+POST /watch   → save email + wiki_title
 """
 
-import os, base64, json, pathlib
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response, HTMLResponse
+import os
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import re
 
-from app.db import (
-    init_db, add_watched, remove_watched,
-    get_all_watched, get_deaths, create_list,
-    add_to_list, get_watched_titles,
-)
-from app.rss import build_global_feed, build_list_feed
-from app.wiki import search_person, resolve_title, get_category_people, CATEGORY_QCODES
+from app.db import init_db, add_watch
 
-app = FastAPI(title="ObituaryWatch", version="2.0.0")
+app = FastAPI(title="ObituaryWatch", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-CATEGORY_ICONS = {
-    "actors": "&#127916;", "musicians": "&#127925;", "athletes": "&#9917;",
-    "politicians": "&#127963;", "authors": "&#128218;", "directors": "&#127909;",
-    "scientists": "&#128300;", "artists": "&#127912;",
-}
-
-LOGO_B64 = ""
-try:
-    with open(os.path.join(STATIC_DIR, "logo.png"), "rb") as f:
-        LOGO_B64 = base64.b64encode(f.read()).decode()
-except Exception:
-    pass
-
-def get_logo_img(size=132):
-    # Serve logo directly from static file — simpler and faster than base64
-    return f'<img src="/static/logo.png" alt="ObituaryWatch" class="logo-img" style="width:{size}px;height:{size}px">'
-
-def head(title="ObituaryWatch"):
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title>
-<link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=Courier+Prime:wght@300;400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css">
-</head><body>"""
-
 @app.on_event("startup")
 def startup():
     init_db()
 
-def base_url(request: Request) -> str:
-    return str(request.base_url).rstrip("/")
+def title_from_url(url: str):
+    url = url.strip()
+    m = re.search(r"wikipedia\.org/wiki/([^#?&\s]+)", url)
+    return m.group(1) if m else None
 
-# ── RSS ───────────────────────────────────────────────────────────────────────
+def head(title="ObituaryWatch"):
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=Courier+Prime:wght@300;400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+.sr-only{{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}}
+.wrap{{max-width:600px;margin:0 auto;padding:60px 24px 100px;position:relative;z-index:1}}
+.logo{{width:100px;height:100px;object-fit:contain;display:block;margin:0 auto 18px;filter:drop-shadow(0 0 20px rgba(200,184,154,0.1))}}
+.site-name{{font-family:"Special Elite",cursive;font-size:1.9rem;letter-spacing:0.15em;color:#f0ece4;text-transform:uppercase;text-align:center;margin-bottom:5px}}
+.site-tagline{{font-size:10px;color:#5a5650;letter-spacing:0.25em;text-transform:uppercase;text-align:center;margin-bottom:52px}}
+.label{{font-size:10px;letter-spacing:0.3em;text-transform:uppercase;color:#5a5650;margin-bottom:10px;font-family:"Special Elite",cursive}}
+.input{{width:100%;background:#0a0806;border:1px solid #2a2520;color:#e8e4dc;font-family:"Courier Prime",monospace;font-size:14px;padding:13px 20px;border-radius:50px;outline:none;transition:border-color .2s}}
+.input:focus{{border-color:#5a5048}}
+.input::placeholder{{color:#3a3630}}
+.btn{{width:100%;margin-top:10px;background:transparent;border:1px solid #3a3428;color:#7a6a58;font-family:"Courier Prime",monospace;font-size:14px;padding:13px 20px;border-radius:50px;cursor:pointer;transition:all .15s;letter-spacing:0.05em}}
+.btn:hover{{border-color:#7a6a58;color:#f0ece4}}
+.btn.watch-btn{{border-color:#5a4a38;color:#c8b89a}}
+.btn.watch-btn:hover{{border-color:#c8b89a;color:#fff}}
+.err{{font-size:12px;color:#7a3a3a;margin-top:10px;font-style:italic;text-align:center;min-height:18px}}
+.card{{border:1px solid rgba(255,255,255,0.07);border-radius:18px;padding:26px;background:#000;margin-bottom:16px}}
+.person-top{{display:flex;gap:18px;align-items:flex-start;margin-bottom:18px}}
+.photo{{width:76px;height:76px;border-radius:50%;object-fit:cover;border:1px solid #2a2520;flex-shrink:0}}
+.photo-placeholder{{width:76px;height:76px;border-radius:50%;background:#1a1710;border:1px solid #2a2520;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;color:#6a6058;font-family:"Courier Prime",monospace}}
+.person-name{{font-size:1.3rem;color:#f0ece4;font-family:"Special Elite",cursive;letter-spacing:0.08em;margin-bottom:4px}}
+.person-occ{{font-size:12px;color:#5a5650;letter-spacing:0.05em}}
+.info-row{{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid #0e0e0e;font-size:13px}}
+.info-row:last-child{{border-bottom:none}}
+.info-key{{color:#5a5650;font-size:10px;letter-spacing:0.1em;text-transform:uppercase}}
+.info-val{{color:#b8b0a8}}
+.extract{{font-size:12px;color:#4a4a48;line-height:1.75;margin-top:14px;padding-top:14px;border-top:1px solid #0e0e0e}}
+.wiki-link{{font-size:11px;color:#3a3630;text-decoration:none;letter-spacing:0.1em;text-transform:uppercase;display:block;text-align:right;margin-top:10px;transition:color .15s}}
+.wiki-link:hover{{color:#c8b89a}}
+.watch-label{{font-size:10px;letter-spacing:0.25em;text-transform:uppercase;color:#5a5650;font-family:"Special Elite",cursive;margin-bottom:12px}}
+.success{{text-align:center;padding:14px;color:#4a7a48;font-size:13px;font-style:italic;display:none}}
+.back{{font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:#3a3630;text-decoration:none;display:inline-flex;align-items:center;gap:5px;margin-bottom:36px;transition:color .15s}}
+.back:hover{{color:#f0ece4}}
+.skeleton{{background:#0e0e0e;border-radius:4px;animation:pulse 1.5s ease infinite}}
+@keyframes pulse{{0%,100%{{opacity:0.5}}50%{{opacity:1}}}}
+</style>
+</head>
+<body>
+<div class="wrap">
+"""
 
-@app.get("/rss", response_class=Response)
-def global_rss_feed(request: Request):
-    return Response(content=build_global_feed(base_url(request)), media_type="application/atom+xml")
+FOOT = "</div></body></html>"
 
-@app.get("/rss/{list_slug}", response_class=Response)
-def list_rss_feed(list_slug: str, request: Request):
-    feed = build_list_feed(list_slug, base_url(request))
-    if feed is None:
-        raise HTTPException(404, f"List {list_slug!r} not found")
-    return Response(content=feed, media_type="application/atom+xml")
-
-# ── API ───────────────────────────────────────────────────────────────────────
-
-class WatchRequest(BaseModel):
-    wiki_title: str | None = None
-    display_name: str | None = None
-    category: str | None = None
-    birth_year: int | None = None
-    list_slug: str | None = None
-
-class CategoryRequest(BaseModel):
-    category: str
-    list_slug: str | None = None
-    limit: int = 100
-
-class EmailRequest(BaseModel):
-    email: str
-
-@app.post("/watch")
-def add_watch(req: WatchRequest):
-    title = req.wiki_title
-    name  = req.display_name
-    if not title and not name:
-        raise HTTPException(400, "Provide wiki_title or display_name")
-    if not title:
-        title = resolve_title(name)
-        if not title:
-            raise HTTPException(404, f"Could not find Wikipedia article for {name!r}")
-    if not name:
-        name = title.replace("_", " ")
-    is_new = add_watched(title, name, req.category, req.birth_year)
-    if req.list_slug:
-        create_list(req.list_slug, req.list_slug)
-        add_to_list(req.list_slug, title)
-    return {"added": is_new, "wiki_title": title, "display_name": name,
-            "message": "Added" if is_new else "Already watching"}
-
-@app.post("/watch/category")
-def add_category(req: CategoryRequest):
-    if req.category.lower() not in CATEGORY_QCODES:
-        raise HTTPException(400, "Unknown category.")
-    people = get_category_people(req.category, limit=req.limit)
-    if not people:
-        raise HTTPException(503, "Wikidata returned no results.")
-    if req.list_slug:
-        create_list(req.list_slug, req.category)
-    added = 0
-    for p in people:
-        if add_watched(p["wiki_title"], p["display_name"], category=req.category):
-            added += 1
-            if req.list_slug:
-                add_to_list(req.list_slug, p["wiki_title"])
-    return {"category": req.category, "total_found": len(people), "newly_added": added}
-
-@app.delete("/watch/{wiki_title:path}")
-def remove_watch(wiki_title: str):
-    remove_watched(wiki_title)
-    return {"removed": wiki_title}
-
-@app.get("/watched")
-def list_watched():
-    return [dict(r) for r in get_all_watched()]
-
-@app.get("/deaths")
-def list_deaths(limit: int = 50):
-    return [dict(r) for r in get_deaths(limit)]
-
-@app.get("/search")
-def search(q: str, limit: int = 6):
-    results = search_person(q, limit)
-    for r in results:
-        if not r.get("description"):
-            r["description"] = ""
-    return results
-
-@app.get("/categories")
-def list_categories():
-    return list(CATEGORY_QCODES.keys())
-
-@app.post("/subscribe")
-def subscribe(req: EmailRequest):
-    emails_path = pathlib.Path(__file__).parent / "subscribers.json"
-    try:
-        emails = json.loads(emails_path.read_text()) if emails_path.exists() else []
-    except Exception:
-        emails = []
-    if req.email not in emails:
-        emails.append(req.email)
-        emails_path.write_text(json.dumps(emails, indent=2))
-    return {"subscribed": True, "email": req.email}
-
-@app.get("/results", response_class=HTMLResponse)
-def results_page(request: Request, q: str = ""):
-    html_path = os.path.join(STATIC_DIR, "results.html")
-    return HTMLResponse(open(html_path, encoding="utf-8").read())
-
-# ── Watchlist page ────────────────────────────────────────────────────────────
-
-@app.get("/watchlist", response_class=HTMLResponse)
-def watchlist_page(request: Request):
-    rss_url = f"{base_url(request)}/rss"
-    watched = get_all_watched()
-    deaths  = get_deaths(limit=50)
-
-    pills = "".join(
-        f'<div class="pill">'
-        f'<span class="pill-name">{r["display_name"]}</span>'
-        f'<span class="pill-cat">{r["category"] or ""}</span>'
-        f'<button class="pill-x" data-title="{r["wiki_title"].replace(chr(34), "")}" onclick="removeWatch(this)">&times;</button>'
-        f'</div>'
-        for r in watched
-    ) or '<div class="empty-state">nothing being watched yet — <a href="/">go add some</a></div>'
-
-    death_rows = "".join(
-        f'<div class="death-row">'
-        f'<a class="death-name" href="{r["wiki_url"]}" target="_blank">{r["display_name"]}</a>'
-        f'<span class="death-date">{r["death_date"] or "?"}</span>'
-        f'<span class="death-det">{r["detected_at"][:10]}</span>'
-        f'</div>'
-        for r in deaths
-    ) or '<p class="empty-state">none detected yet.</p>'
-
-    return HTMLResponse(head("ObituaryWatch — Watchlist") + f"""
-<div class="page">
-  <a class="back-link" href="/">&#8592; back</a>
-  <div class="header" style="margin-bottom:50px">
-    {get_logo_img()}
-    <div class="site-name">ObituaryWatch</div>
-  </div>
-  <div class="rss-bar">
-    <span style="color:#c8b89a">&#x25C6;</span>
-    <span>RSS: <a href="{rss_url}">{rss_url}</a></span>
-  </div>
-  <div class="section">
-    <div class="section-label">Watchlist &mdash; {len(watched)} people</div>
-    <div class="pills-grid">{pills}</div>
-  </div>
-  <div class="section">
-    <div class="section-label">Detected deaths &mdash; {len(deaths)}</div>
-    <div>{death_rows}</div>
-  </div>
-</div>
-<script>
-async function removeWatch(btn) {{
-  await fetch('/watch/' + encodeURIComponent(btn.getAttribute('data-title')), {{method:'DELETE'}});
-  btn.closest('.pill').remove();
-}}
-</script>
-</body></html>""")
-
-# ── Main page ─────────────────────────────────────────────────────────────────
+# ── Home ──────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    cat_cards = "".join(
-        f'<button class="cat-card" data-cat="{c}" onclick="selectCategory(this)">'
-        f'<span class="cat-icon">{CATEGORY_ICONS.get(c, "&#9670;")}</span>'
-        f'<span class="cat-label">{c.title()}</span>'
-        f'</button>'
-        for c in CATEGORY_QCODES
-    )
+def home():
+    return HTMLResponse(head() + """
+<h2 class="sr-only">ObituaryWatch — paste a Wikipedia link to get notified when someone dies</h2>
+<img src="/static/logo.png" alt="ObituaryWatch" class="logo">
+<div class="site-name">ObituaryWatch</div>
+<div class="site-tagline">know before everyone else</div>
 
-    return HTMLResponse(head() + f"""
-<div class="page">
+<div class="label">Paste a Wikipedia link</div>
+<input class="input" id="url" type="url"
+  placeholder="https://en.wikipedia.org/wiki/Nicolas_Cage"
+  autocomplete="off" spellcheck="false"
+  onkeydown="if(event.key==='Enter')go()">
+<button class="btn" onclick="go()">look up &rarr;</button>
+<div class="err" id="err"></div>
 
-  <div class="header">
-    {get_logo_img()}
-    <div class="site-name">ObituaryWatch</div>
-    <div class="site-tagline">know before everyone else</div>
-  </div>
+<script>
+function go() {
+  const v = document.getElementById('url').value.trim();
+  const e = document.getElementById('err');
+  if (!v) { e.textContent = 'paste a Wikipedia link first.'; return; }
+  if (!v.includes('wikipedia.org/wiki/')) { e.textContent = "that doesn't look like a Wikipedia link."; return; }
+  e.textContent = '';
+  window.location.href = '/person?url=' + encodeURIComponent(v);
+}
+</script>
+""" + FOOT)
 
-  <div class="section">
-    <div class="section-label">Search a person</div>
-    <div class="search-wrap" id="search-wrap">
-      <input class="search-input" id="search-input" type="text"
-        placeholder="type a name... e.g. Nicolas Cage"
-        autocomplete="off" spellcheck="false"
-        oninput="handleSearch(this.value)"
-        onkeydown="handleKey(event)">
-      <div class="search-spinner" id="search-spinner"></div>
-      <div class="search-results" id="search-results"></div>
+# ── Person card ───────────────────────────────────────────────────────────────
+
+@app.get("/person", response_class=HTMLResponse)
+def person_page(url: str = ""):
+    if not url:
+        return RedirectResponse("/")
+    title = title_from_url(url)
+    if not title:
+        return RedirectResponse("/")
+
+    safe_title = title.replace("'", "\\'").replace('"', '')
+
+    return HTMLResponse(head("ObituaryWatch — loading...") + f"""
+<a class="back" href="/">&#8592; back</a>
+<div id="main"></div>
+
+<script>
+const TITLE = '{safe_title}';
+const YEAR  = new Date().getFullYear();
+
+const OCCS = [
+  ['Actor',        ['actor','actress']],
+  ['Musician',     ['musician','singer','songwriter','rapper','composer','guitarist']],
+  ['Director',     ['director','filmmaker']],
+  ['Writer',       ['writer','author','novelist','poet','screenwriter','journalist']],
+  ['Politician',   ['politician','president','prime minister','senator','governor']],
+  ['Athlete',      ['athlete','footballer','basketball player','tennis player','boxer']],
+  ['Scientist',    ['scientist','physicist','biologist','astronomer','mathematician']],
+  ['Artist',       ['artist','painter','sculptor','photographer']],
+  ['Comedian',     ['comedian','comic']],
+  ['Entrepreneur', ['entrepreneur','businessman','businesswoman','ceo']],
+  ['Model',        ['model']],
+];
+
+function occ(desc) {{
+  if (!desc) return '';
+  const d = desc.toLowerCase();
+  for (const [l,ks] of OCCS) if (ks.some(k=>d.includes(k))) return l;
+  return desc.split(/[,.(]/)[0].trim().slice(0,30);
+}}
+
+function birthDate(text) {{
+  if (!text) return null;
+  const m = text.match(/\\(born\\s+([A-Za-z]+\\s+\\d{{1,2}},?\\s+\\d{{4}}|\\d{{1,2}}\\s+[A-Za-z]+\\s+\\d{{4}}|\\d{{4}})/i);
+  return m ? m[1] : null;
+}}
+
+function birthYear(text) {{
+  if (!text) return null;
+  const m = text.match(/born.*?(\\d{{4}})/i);
+  return m ? parseInt(m[1]) : null;
+}}
+
+// Show skeleton while loading
+document.getElementById('main').innerHTML = `
+  <div class="card">
+    <div class="person-top">
+      <div class="photo-placeholder skeleton" style="border:none"></div>
+      <div style="flex:1;padding-top:6px">
+        <div class="skeleton" style="height:20px;width:55%;margin-bottom:10px;border-radius:10px"></div>
+        <div class="skeleton" style="height:13px;width:35%;border-radius:6px"></div>
+      </div>
     </div>
-  </div>
+    <div class="skeleton" style="height:13px;margin-bottom:8px;border-radius:6px"></div>
+    <div class="skeleton" style="height:13px;width:70%;border-radius:6px"></div>
+  </div>`;
 
-  <div class="section">
-    <button class="cat-toggle" id="cat-toggle" onclick="toggleCats()">
-      <span class="cat-toggle-arrow">&#9658;</span>
-      Browse by category
-    </button>
-    <div class="cat-section" id="cat-section">
-      <div class="cat-grid">{cat_cards}</div>
-      <div class="cat-msg" id="cat-msg"></div>
-    </div>
-  </div>
+async function load() {{
+  try {{
+    const url = 'https://en.wikipedia.org/w/api.php?action=query' +
+      '&titles=' + encodeURIComponent(TITLE.replace(/_/g,' ')) +
+      '&prop=extracts|pageimages|description' +
+      '&exintro=true&explaintext=true&pithumbsize=200&redirects=true' +
+      '&format=json&origin=*';
+    const data  = await (await fetch(url)).json();
+    const page  = Object.values(data.query.pages)[0];
 
-  <div class="section" id="watchlist-section" style="display:none">
-    <div class="section-label">Your watchlist</div>
-    <div class="watchlist-preview" id="watchlist-preview"></div>
-    <a class="view-all-link" href="/watchlist">view all &amp; detected deaths &#8594;</a>
-  </div>
+    if (page.missing !== undefined) {{
+      document.getElementById('main').innerHTML =
+        '<div style="text-align:center;color:#5a5650;padding:60px 0;font-style:italic">Page not found on Wikipedia.</div>';
+      return;
+    }}
 
-  <div class="section">
-    <div class="section-label">Get notified by email</div>
-    <div class="email-row">
-      <input class="email-input" id="email-input" type="email" placeholder="your@email.com">
-      <button class="btn-subscribe" onclick="subscribe()">notify me</button>
-    </div>
-    <div class="email-msg" id="email-msg"></div>
-  </div>
+    const name    = page.title || TITLE.replace(/_/g,' ');
+    const desc    = page.description || '';
+    const extract = (page.extract || '').slice(0,320);
+    const thumb   = page.thumbnail?.source || '';
+    const job     = occ(desc);
+    const bd      = birthDate(extract);
+    const by      = birthYear(extract);
+    const age     = by ? YEAR - by : null;
 
-</div>
-<script src="/static/app.js"></script>
-</body></html>""")
+    document.title = name + ' — ObituaryWatch';
+
+    const photo = thumb
+      ? `<img src="${{thumb}}" alt="${{name}}" class="photo">`
+      : `<div class="photo-placeholder">${{name.charAt(0).toUpperCase()}}</div>`;
+
+    let rows = '';
+    if (job) rows += `<div class="info-row"><span class="info-key">Occupation</span><span class="info-val">${{job}}</span></div>`;
+    if (bd)  rows += `<div class="info-row"><span class="info-key">Born</span><span class="info-val">${{bd}}${{age?' &middot; age '+age:''}}</span></div>`;
+    else if (age) rows += `<div class="info-row"><span class="info-key">Age</span><span class="info-val">${{age}}</span></div>`;
+
+    const safeN = name.replace(/'/g,"\\'");
+    const first = name.split(' ')[0];
+
+    document.getElementById('main').innerHTML = `
+      <div class="card">
+        <div class="person-top">
+          ${{photo}}
+          <div>
+            <div class="person-name">${{name}}</div>
+            <div class="person-occ">${{desc}}</div>
+          </div>
+        </div>
+        ${{rows}}
+        ${{extract ? '<div class="extract">'+extract+'...</div>' : ''}}
+        <a class="wiki-link" href="https://en.wikipedia.org/wiki/${{TITLE}}" target="_blank">view on Wikipedia &rarr;</a>
+      </div>
+      <div class="card">
+        <div class="watch-label">Get notified when ${{first}} dies</div>
+        <input class="input" id="email" type="email" placeholder="your@email.com"
+          onkeydown="if(event.key==='Enter')doWatch('${{safeN}}')">
+        <button class="btn watch-btn" onclick="doWatch('${{safeN}}')">Watch</button>
+        <div class="err" id="err"></div>
+        <div class="success" id="ok">&#10003; You're watching ${{name}}. We'll email you when Wikipedia registers their death.</div>
+      </div>`;
+
+  }} catch(e) {{
+    console.error(e);
+    document.getElementById('main').innerHTML =
+      '<div style="text-align:center;color:#5a5650;padding:60px 0;font-style:italic">Error loading. Please try again.</div>';
+  }}
+}}
+
+async function doWatch(name) {{
+  const email = document.getElementById('email').value.trim();
+  const err   = document.getElementById('err');
+  if (!email || !email.includes('@')) {{ err.textContent = 'enter a valid email.'; return; }}
+  err.textContent = '';
+  const r = await fetch('/watch', {{
+    method:'POST', headers:{{'Content-Type':'application/json'}},
+    body: JSON.stringify({{wiki_title: TITLE, email}})
+  }});
+  if (r.ok) {{
+    document.getElementById('email').style.display = 'none';
+    document.querySelector('.watch-btn').style.display = 'none';
+    document.getElementById('ok').style.display = 'block';
+  }} else {{
+    err.textContent = 'something went wrong. try again.';
+  }}
+}}
+
+load();
+</script>
+""" + FOOT)
+
+# ── Save watch ────────────────────────────────────────────────────────────────
+
+class WatchReq(BaseModel):
+    wiki_title: str
+    email:      str
+
+@app.post("/watch")
+def save_watch(req: WatchReq):
+    if not req.email or "@" not in req.email:
+        raise HTTPException(400, "Invalid email")
+    if not req.wiki_title:
+        raise HTTPException(400, "Invalid title")
+    add_watch(req.wiki_title.strip(), req.email.strip().lower())
+    return {"ok": True}
