@@ -159,6 +159,11 @@ def subscribe(req: EmailRequest):
         emails_path.write_text(json.dumps(emails, indent=2))
     return {"subscribed": True, "email": req.email}
 
+@app.get("/results", response_class=HTMLResponse)
+def results_page(request: Request, q: str = ""):
+    html_path = os.path.join(STATIC_DIR, "results.html")
+    return HTMLResponse(open(html_path, encoding="utf-8").read())
+
 # ── Watchlist page ────────────────────────────────────────────────────────────
 
 @app.get("/watchlist", response_class=HTMLResponse)

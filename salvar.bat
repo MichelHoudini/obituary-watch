@@ -1,8 +1,8 @@
 cd /d %USERPROFILE%\obituary-watch
 call venv\Scripts\activate
 git add -A
-git commit -m "new UI: live search autocomplete, React-style pills, static CSS/JS"
+git commit -m "search results page: Wikidata-powered, living people only, single occupation, pagination"
 git push origin master
 echo.
-echo Done! All changes saved to GitHub.
+echo Done! Changes saved to GitHub.
 pause

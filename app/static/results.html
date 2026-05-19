@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ObituaryWatch — results</title>
+<link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=Courier+Prime:wght@300;400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+.results-wrap{max-width:780px;margin:0 auto;padding:40px 24px 80px}
+.top-bar{display:flex;align-items:center;gap:12px;margin-bottom:48px}
+.back-btn{background:none;border:1px solid rgba(255,255,255,0.1);border-radius:50px;color:rgba(255,255,255,0.4);font-family:"Courier Prime",monospace;font-size:12px;letter-spacing:0.15em;text-transform:uppercase;padding:10px 16px;cursor:pointer;transition:border-color .2s,color .2s;white-space:nowrap;flex-shrink:0;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.back-btn:hover{border-color:rgba(255,255,255,0.4);color:rgba(255,255,255,0.9)}
+.search-bar{flex:1;background:#0a0806;border:1px solid #2a2520;color:#e8e4dc;font-family:"Courier Prime",monospace;font-size:15px;padding:12px 20px;border-radius:50px;outline:none;transition:border-color .2s;min-width:0}
+.search-bar:focus{border-color:#5a5048}
+.search-bar::placeholder{color:#3a3630}
+.search-go{background:transparent;border:1px solid #4a4038;color:#9a8e80;font-family:"Courier Prime",monospace;font-size:13px;padding:12px 20px;border-radius:50px;cursor:pointer;transition:border-color .15s,color .15s;white-space:nowrap;flex-shrink:0}
+.search-go:hover{border-color:#7a6a58;color:#f0ece4}
+.meta-line{font-size:10px;letter-spacing:0.25em;text-transform:uppercase;color:#5a5650;margin-bottom:20px;font-family:"Special Elite",cursive}
+.result-list{display:flex;flex-direction:column;gap:8px}
+.result-row{display:flex;align-items:center;gap:14px;border:1px solid rgba(255,255,255,0.08);border-radius:50px;padding:10px 16px 10px 10px;background:#000;cursor:default;transition:background .25s,border-color .25s,transform .12s;animation:slideIn .4s ease both}
+.result-row:hover{background:rgba(255,255,255,0.04);border-color:rgba(255,255,255,0.22);transform:scale(1.01)}
+.result-row:active{transform:scale(0.99)}
+@keyframes slideIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.r-avatar{width:40px;height:40px;border-radius:50%;background:#1a1710;border:1px solid #2a2520;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#6a6058}
+.r-avatar img{width:100%;height:100%;object-fit:cover}
+.r-info{flex:1;min-width:0}
+.r-name{font-size:14px;color:rgba(255,255,255,0.9);font-weight:400;letter-spacing:0.03em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r-meta{font-size:11px;color:#5a5650;margin-top:3px;letter-spacing:0.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.add-btn{width:30px;height:30px;border-radius:50%;border:1px solid rgba(255,255,255,0.15);background:transparent;color:rgba(255,255,255,0.35);font-size:18px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:border-color .2s,color .2s,background .2s;font-family:"Courier Prime",monospace;line-height:1}
+.add-btn:hover{border-color:rgba(255,255,255,0.5);color:#fff;background:rgba(255,255,255,0.07)}
+.add-btn.added{border-color:#2a4a28;color:#4a7a48;background:#0a120a}
+.add-btn.loading{opacity:0.4;pointer-events:none}
+.pagination{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:48px}
+.page-btn{width:34px;height:34px;border-radius:50%;border:1px solid rgba(255,255,255,0.1);background:transparent;color:rgba(255,255,255,0.35);font-family:"Courier Prime",monospace;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s}
+.page-btn:hover{border-color:rgba(255,255,255,0.4);color:rgba(255,255,255,0.9)}
+.page-btn.active{border-color:rgba(255,255,255,0.55);color:#fff;background:rgba(255,255,255,0.07);pointer-events:none}
+.page-dots{color:#3a3630;font-size:12px;padding:0 2px}
+.loading-state{text-align:center;padding:40px;color:#5a5650;font-style:italic;font-size:13px}
+@media(max-width:600px){.top-bar{flex-wrap:wrap}}
+</style>
+</head>
+<body>
+<div class="results-wrap">
+  <h2 class="sr-only">Search results — list of living notable people matching your query</h2>
+
+  <div class="top-bar">
+    <a class="back-btn" href="/">&#8592; back</a>
+    <input class="search-bar" id="search-bar" type="text" placeholder="search another name..." autocomplete="off" spellcheck="false">
+    <button class="search-go" onclick="goSearch()">search</button>
+  </div>
+
+  <div class="meta-line" id="meta-line">searching...</div>
+  <div class="result-list" id="result-list"></div>
+  <div class="pagination" id="pagination"></div>
+</div>
+
+<script>
+const PER_PAGE    = 8;
+let allResults    = [];
+let currentPage   = 1;
+let currentQuery  = '';
+const watchedTitles = new Set();
+const YEAR = new Date().getFullYear();
+
+// Primary occupation labels — we pick the FIRST one that matches, in priority order
+// This gives "Actor" instead of "Actor · Politician · Director"
+const OCCUPATION_PRIORITY = [
+  'actor','actress','film actor','television actor',
+  'musician','singer','songwriter','rapper','composer','guitarist','drummer','bassist',
+  'athlete','footballer','basketball player','tennis player','swimmer','boxer','racing driver',
+  'director','film director','screenwriter',
+  'politician','president','prime minister','senator','governor',
+  'writer','author','novelist','poet','journalist',
+  'scientist','physicist','biologist','astronomer',
+  'artist','painter','sculptor','photographer',
+  'comedian','presenter','tv host',
+  'model','dancer','choreographer',
+  'entrepreneur','businessman','businesswoman',
+];
+
+function getPrimaryOccupation(description) {
+  if (!description) return '';
+  const d = description.toLowerCase();
+  for (const occ of OCCUPATION_PRIORITY) {
+    if (d.includes(occ)) {
+      // Capitalize first letter
+      return occ.charAt(0).toUpperCase() + occ.slice(1);
+    }
+  }
+  // Fallback: use first word(s) of description up to first comma or period
+  const short = description.split(/[,.(]/)[0].trim();
+  return short.length < 40 ? short : '';
+}
+
+function extractBirthYear(text) {
+  if (!text) return null;
+  const m = text.match(/born\s+(\d{4})|\(born\s+(\d{4})/);
+  return m ? parseInt(m[1] || m[2]) : null;
+}
+
+// ── SPARQL query: living people matching name, ordered by sitelink count (popularity proxy) ──
+async function searchPeopleWikidata(name) {
+  // Use SPARQL to find humans with this name label, no death date, with English Wikipedia article
+  // ORDER BY sitelinks DESC = most notable first
+  const query = `
+SELECT DISTINCT ?item ?itemLabel ?desc ?article ?birthYear WHERE {
+  ?item wdt:P31 wd:Q5 .
+  ?item rdfs:label ?label .
+  FILTER(LANG(?label) = "en")
+  FILTER(CONTAINS(LCASE(?label), LCASE("${name.replace(/"/g,'')}")))
+  FILTER NOT EXISTS { ?item wdt:P570 [] }
+  ?article schema:about ?item ;
+           schema:isPartOf <https://en.wikipedia.org/> .
+  OPTIONAL {
+    ?item wdt:P569 ?birth .
+    BIND(YEAR(?birth) AS ?birthYear)
+  }
+  OPTIONAL {
+    ?item schema:description ?desc .
+    FILTER(LANG(?desc) = "en")
+  }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
+}
+ORDER BY DESC(?sitelinks)
+LIMIT 80
+  `.trim();
+
+  const url = 'https://query.wikidata.org/sparql?query=' + encodeURIComponent(query) +
+    '&format=json&origin=*';
+
+  const resp = await fetch(url, {
+    headers: { 'Accept': 'application/sparql-results+json' }
+  });
+  if (!resp.ok) throw new Error('SPARQL error ' + resp.status);
+  const data = await resp.json();
+  return data.results.bindings;
+}
+
+// ── Fallback: Wikidata wbsearchentities (faster, less structured) ──
+async function searchPeopleWikidataFast(name) {
+  const url = 'https://www.wikidata.org/w/api.php?action=wbsearchentities' +
+    '&search=' + encodeURIComponent(name) +
+    '&language=en&uselang=en&type=item&limit=50&format=json&origin=*';
+  const data = await (await fetch(url)).json();
+
+  // For each result, check if it's a living human with a Wikipedia article
+  const results = [];
+  const candidates = (data.search || []).filter(item => {
+    const d = (item.description || '').toLowerCase();
+    // Reject clear non-persons
+    const nonPersonSignals = ['film','album','song','discography','television series',
+      'tv series','video game','municipality','given name','family name',
+      'software','company','organization','building','river','mountain'];
+    return !nonPersonSignals.some(s => d.includes(s));
+  }).slice(0, 20);
+
+  // Batch check: fetch entity data to confirm human + no death date + get Wikipedia title
+  if (!candidates.length) return [];
+
+  const ids = candidates.map(c => c.id).join('|');
+  const entityUrl = 'https://www.wikidata.org/w/api.php?action=wbgetentities' +
+    '&ids=' + ids + '&props=claims|sitelinks&sitefilter=enwiki&format=json&origin=*';
+  const eData = await (await fetch(entityUrl)).json();
+
+  for (const candidate of candidates) {
+    const entity = eData.entities?.[candidate.id];
+    if (!entity) continue;
+    const claims = entity.claims || {};
+    // Must be human (P31 = Q5)
+    const isHuman = (claims.P31 || []).some(s =>
+      s.mainsnak?.datavalue?.value?.id === 'Q5'
+    );
+    if (!isHuman) continue;
+    // Must NOT have death date
+    if (claims.P570?.length) continue;
+    // Must have English Wikipedia article
+    const wikiTitle = entity.sitelinks?.enwiki?.title;
+    if (!wikiTitle) continue;
+
+    const desc = candidate.description || '';
+    const birthClaim = claims.P569?.[0]?.mainsnak?.datavalue?.value?.time;
+    const birthYear = birthClaim ? parseInt(birthClaim.slice(1, 5)) : extractBirthYear(desc);
+
+    results.push({
+      title:        wikiTitle.replace(/ /g, '_'),
+      display_name: candidate.label || wikiTitle,
+      description:  desc,
+      occupation:   getPrimaryOccupation(desc),
+      birth_year:   birthYear,
+      url:          'https://en.wikipedia.org/wiki/' + wikiTitle.replace(/ /g, '_'),
+    });
+  }
+
+  return results;
+}
+
+async function searchWikipediaFallback(q) {
+  // Simple Wikipedia opensearch — no filtering, catches less-known people
+  try {
+    const url = 'https://en.wikipedia.org/w/api.php?action=opensearch' +
+      '&search=' + encodeURIComponent(q) + '&limit=10&namespace=0&format=json&origin=*';
+    const [, titles, descs] = await (await fetch(url)).json();
+    return titles.map((t, i) => ({
+      title:        t.replace(/ /g, '_'),
+      display_name: t,
+      description:  descs[i] || '',
+      occupation:   getPrimaryOccupation(descs[i] || ''),
+      birth_year:   extractBirthYear(descs[i] || ''),
+      url:          'https://en.wikipedia.org/wiki/' + t.replace(/ /g, '_'),
+    }));
+  } catch(e) { return []; }
+}
+
+async function runSearch(q) {
+  currentQuery = q;
+  document.getElementById('meta-line').textContent = 'searching...';
+  document.getElementById('result-list').innerHTML =
+    '<div class="loading-state">finding living people named "' + q + '"...</div>';
+  document.getElementById('pagination').innerHTML = '';
+
+  try {
+    let results = await searchPeopleWikidataFast(q);
+
+    // Fallback: if Wikidata finds nothing, use Wikipedia opensearch
+    if (!results.length) {
+      results = await searchWikipediaFallback(q);
+    }
+
+    if (!results.length) {
+      document.getElementById('meta-line').textContent = 'no results for "' + q + '".';
+      document.getElementById('result-list').innerHTML = '';
+      return;
+    }
+
+    allResults = results;
+    renderPage(1);
+
+    // Load thumbnails async
+    loadThumbnails(results.slice(0, PER_PAGE));
+
+  } catch(e) {
+    console.error(e);
+    document.getElementById('meta-line').textContent = 'error searching. try again.';
+    document.getElementById('result-list').innerHTML = '';
+  }
+}
+
+function renderPage(page) {
+  currentPage  = page;
+  const total      = allResults.length;
+  const totalPages = Math.ceil(total / PER_PAGE);
+  const start      = (page - 1) * PER_PAGE;
+  const pageItems  = allResults.slice(start, start + PER_PAGE);
+
+  document.getElementById('meta-line').textContent =
+    total + ' result' + (total !== 1 ? 's' : '') + ' for "' + currentQuery + '"';
+
+  document.getElementById('result-list').innerHTML = pageItems.map((p, i) => {
+    const isW    = watchedTitles.has(p.title);
+    const initial = p.display_name.trim().charAt(0).toUpperCase();
+    const agePart = p.birth_year ? 'age ' + (YEAR - p.birth_year) : '';
+    const occPart = p.occupation || p.description.split(/[,.(]/)[0].trim() || '';
+    const meta    = [agePart, occPart].filter(Boolean).join(' · ');
+    const safeT   = p.title.replace(/"/g, '&quot;');
+    const safeN   = p.display_name.replace(/"/g, '&quot;');
+    const id      = 'av-' + (start + i);
+
+    return `<div class="result-row" style="animation-delay:${i * 0.05}s">
+      <div class="r-avatar" id="${id}">${initial}</div>
+      <div class="r-info">
+        <div class="r-name">${p.display_name}</div>
+        <div class="r-meta">${meta || '&nbsp;'}</div>
+      </div>
+      <button class="add-btn ${isW ? 'added' : ''}"
+        data-title="${safeT}" data-name="${safeN}"
+        onclick="toggleWatch(this)"
+        title="${isW ? 'Remove' : 'Watch'}">${isW ? '&#10003;' : '+'}</button>
+    </div>`;
+  }).join('');
+
+  renderPagination(page, totalPages);
+  loadThumbnails(pageItems, start);
+}
+
+function renderPagination(page, total) {
+  if (total <= 1) { document.getElementById('pagination').innerHTML = ''; return; }
+  const show   = new Set([1, total, page-1, page, page+1].filter(p => p >= 1 && p <= total));
+  const sorted = [...show].sort((a, b) => a - b);
+  let html = '';
+  sorted.forEach((p, i) => {
+    if (i > 0 && p - sorted[i-1] > 1) html += '<span class="page-dots">···</span>';
+    html += `<button class="page-btn ${p === page ? 'active' : ''}" onclick="renderPage(${p})">${p}</button>`;
+  });
+  document.getElementById('pagination').innerHTML = html;
+}
+
+async function loadThumbnails(items, startIdx) {
+  startIdx = startIdx || 0;
+  if (!items.length) return;
+  try {
+    const titles = items.map(r => r.display_name).join('|');
+    const url = 'https://en.wikipedia.org/w/api.php?action=query&prop=pageimages' +
+      '&titles=' + encodeURIComponent(titles) +
+      '&pithumbsize=80&format=json&origin=*';
+    const data = await (await fetch(url)).json();
+    let idx = startIdx;
+    for (const p of Object.values(data.query?.pages || {})) {
+      if (p.thumbnail?.source) {
+        const el = document.getElementById('av-' + idx);
+        if (el) el.innerHTML = `<img src="${p.thumbnail.source}" alt="" loading="lazy">`;
+      }
+      idx++;
+    }
+  } catch(e) {}
+}
+
+async function toggleWatch(btn) {
+  const title = btn.getAttribute('data-title');
+  const name  = btn.getAttribute('data-name');
+  btn.classList.add('loading');
+
+  if (watchedTitles.has(title)) {
+    await fetch('/watch/' + encodeURIComponent(title), { method: 'DELETE' });
+    watchedTitles.delete(title);
+    btn.classList.remove('added', 'loading');
+    btn.innerHTML = '+';
+  } else {
+    const r = await fetch('/watch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wiki_title: title, display_name: name })
+    });
+    btn.classList.remove('loading');
+    if (r.ok) {
+      watchedTitles.add(title);
+      btn.classList.add('added');
+      btn.innerHTML = '&#10003;';
+    }
+  }
+}
+
+function goSearch() {
+  const q = document.getElementById('search-bar').value.trim();
+  if (!q) return;
+  history.pushState({}, '', '/results?q=' + encodeURIComponent(q));
+  currentPage = 1;
+  runSearch(q);
+}
+
+document.getElementById('search-bar').addEventListener('keydown', e => {
+  if (e.key === 'Enter') goSearch();
+});
+
+async function init() {
+  try {
+    const data = await (await fetch('/watched')).json();
+    data.forEach(p => watchedTitles.add(p.wiki_title));
+  } catch(e) {}
+
+  const q = new URLSearchParams(location.search).get('q') || '';
+  document.getElementById('search-bar').value = q;
+  if (q.trim().length >= 2) {
+    runSearch(q.trim());
+  } else {
+    document.getElementById('meta-line').textContent = 'enter a name above and press search.';
+    document.getElementById('result-list').innerHTML = '';
+  }
+}
+
+init();
+</script>
+</body>
+</html>

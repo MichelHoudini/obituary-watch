@@ -58,17 +58,19 @@ async function fetchThumbnails(titles) {
 
 function handleSearch(val) {
   clearTimeout(searchTimer);
-  const box = document.getElementById('search-results');
   const spinner = document.getElementById('search-spinner');
   focusIndex = -1;
   if (!val.trim()) {
-    box.style.display = 'none';
     spinner.classList.remove('active');
     return;
   }
-  box.style.display = 'block';
   if (val.length >= 2) spinner.classList.add('active');
-  searchTimer = setTimeout(() => doSearch(val.trim()), 320);
+  searchTimer = setTimeout(() => goToResults(val.trim()), 500);
+}
+
+function goToResults(q) {
+  document.getElementById('search-spinner').classList.remove('active');
+  window.location.href = '/results?q=' + encodeURIComponent(q);
 }
 
 async function doSearch(q) {
@@ -77,79 +79,39 @@ async function doSearch(q) {
   lastQuery = q;
   if (q.length < 2) { box.style.display = 'none'; spinner.classList.remove('active'); return; }
   try {
-    // Search Wikidata directly from browser (no 403 issues)
-    const wdUrl = 'https://www.wikidata.org/w/api.php?action=wbsearchentities' +
-      '&search=' + encodeURIComponent(q) +
-      '&language=en&uselang=en&type=item&limit=12&format=json&origin=*';
-    const wdResp = await fetch(wdUrl);
-    const wdData = await wdResp.json();
+    // Step 1: Wikipedia opensearch — ranked by popularity, best for famous names
+    const wpUrl = 'https://en.wikipedia.org/w/api.php?action=opensearch' +
+      '&search=' + encodeURIComponent(q) + '&limit=8&namespace=0&format=json&origin=*';
+    const [, titles, descs, urls] = await (await fetch(wpUrl)).json();
 
     spinner.classList.remove('active');
     if (document.getElementById('search-input').value.trim() !== q) return;
 
-    // Filter to people and build results
-    const rejectKw = [
-      'film','album','song','series','novel','city','village','company','software','game',
-      'given name','family name','surname','commune','municipality','district','province',
-      'river','lake','mountain','discography','concert','festival','tour','band','group',
-      'documentary','television','broadcast','recording','compilation','soundtrack',
-      'lollapalooza','montreux','performed','leurres','artwork','painting','building',
-      'bishop','pope','cardinal','archbishop','saint','catholic','roman catholic',
-      'physicist','chemist','mathematician','philosopher','theologian'
-    ];
-    const items = (wdData.search || []).filter(item => {
-      const d = (item.description || '').toLowerCase();
-      const label = (item.label || '').toLowerCase();
-      if (!item.description || item.description.trim() === '') return false;
-      if (rejectKw.some(kw => d.includes(kw) || label.includes(kw))) return false;
-      if (/\d{4}/.test(item.label) && d === '') return false;
-      // Filter out people who died before 1900
-      const deathMatch = d.match(/(\d{4})[\u2013\-](\d{4})/);
-      if (deathMatch) {
-        const deathYear = parseInt(deathMatch[2]);
-        if (deathYear && deathYear < 1900) return false;
-      }
-      return true;
-    });
-    // Sort: people with clear person keywords first
-    const personKw = ['actor','actress','musician','singer','songwriter','rapper','athlete','footballer','director','writer','author','artist','presenter','born','politician','president','prime minister'];
-    items.sort((a, b) => {
-      const aIsPerson = personKw.some(k => (a.description||'').toLowerCase().includes(k)) ? 0 : 1;
-      const bIsPerson = personKw.some(k => (b.description||'').toLowerCase().includes(k)) ? 0 : 1;
-      if (aIsPerson !== bIsPerson) return aIsPerson - bIsPerson;
-      return (b.description||'').length - (a.description||'').length;
-    });
-    // Fix birth year — only extract 4-digit years that look like birth years (1900-2010)
-    // not years from descriptions like "president from 2007 to 2012"
+    // Step 2: Enrich with Wikidata descriptions (async, non-blocking)
+    const baseResults = titles.map((t, i) => ({
+      title: t.replace(/ /g, '_'),
+      display_name: t,
+      description: descs[i] || '',
+      birth_year: extractBirthYear(descs[i] || ''),
+      url: urls[i]
+    }));
 
-    if (!items.length) {
-      // Fallback to Wikipedia opensearch
-      const wpUrl = 'https://en.wikipedia.org/w/api.php?action=opensearch' +
-        '&search=' + encodeURIComponent(q) + '&limit=6&namespace=0&format=json&origin=*';
-      const wpResp = await fetch(wpUrl);
-      const [, titles, descs, urls] = await wpResp.json();
-      lastResults = titles.map((t, i) => ({
-        title: t.replace(/ /g,'_'), display_name: t,
-        description: descs[i] || '', birth_year: null, url: urls[i]
-      }));
-    } else {
-      lastResults = items.slice(0,6).map(item => {
-        let desc = (item.description || '');
-        if (desc.length > 80) desc = desc.slice(0,77) + '...';
-        if (desc) desc = desc[0].toUpperCase() + desc.slice(1);
-        const byMatch = desc.match(/born\s+(\d{4})|\(born\s+(\d{4})/);
-        const birthYear = byMatch ? parseInt(byMatch[1]||byMatch[2]) : null;
-        // Use label as title placeholder — will resolve on add
-        return {
-          title: item.label.replace(/ /g,'_'),
-          display_name: item.label,
-          description: desc,
-          birth_year: birthYear,
-          url: 'https://en.wikipedia.org/wiki/' + encodeURIComponent(item.label.replace(/ /g,'_')),
-          wikidata_id: item.id
-        };
-      });
-    }
+    // Filter out non-persons and obviously dead people (year ranges in description)
+    const rejectKw = [
+      'film','album','song','discography','filmography','soundtrack',
+      'television series','tv series','video game','software',
+      'municipality','commune','district','river','lake','mountain','building',
+      'male given name','female given name','given name','family name','surname'
+    ];
+    lastResults = baseResults.filter(r => {
+      const d = r.description.toLowerCase();
+      if (rejectKw.some(kw => d.includes(kw))) return false;
+      // Filter out people with death year ranges like (1865-1918) or (1947–2022)
+      if (/\(\d{4}[\u2013\-]\d{4}\)/.test(r.description)) return false;
+      // Filter out descriptions ending in a death year like "journalist (1947-2022)"
+      if (/\d{4}[\u2013\-]\d{4}/.test(r.description)) return false;
+      return true;
+    }).slice(0, 6);
 
     renderResults(lastResults, q);
 
@@ -160,30 +122,71 @@ async function doSearch(q) {
           renderResults(lastResults, q, thumbs);
       });
     }
+
+    // Async: enrich descriptions from Wikidata
+    enrichFromWikidata(lastResults, q);
+
   } catch(e) {
     spinner.classList.remove('active');
     box.innerHTML = '<div class="search-empty">error searching. try again.</div>';
   }
 }
 
+function extractBirthYear(text) {
+  const m = text.match(/born\s+(\d{4})|\(born\s+(\d{4})/);
+  return m ? parseInt(m[1]||m[2]) : null;
+}
+
+async function enrichFromWikidata(results, query) {
+  // Fetch richer descriptions AND check if person is dead
+  try {
+    const toRemove = new Set();
+    for (const r of results) {
+      const url = 'https://www.wikidata.org/w/api.php?action=wbsearchentities' +
+        '&search=' + encodeURIComponent(r.display_name) +
+        '&language=en&type=item&limit=3&format=json&origin=*';
+      const data = await (await fetch(url)).json();
+      const match = (data.search||[]).find(item =>
+        item.label.toLowerCase() === r.display_name.toLowerCase()
+      );
+      if (match) {
+        // Check if person has death date via Wikidata entity
+        const entityUrl = 'https://www.wikidata.org/w/api.php?action=wbgetentities' +
+          '&ids=' + match.id + '&props=claims&format=json&origin=*';
+        const entityData = await (await fetch(entityUrl)).json();
+        const claims = entityData.entities?.[match.id]?.claims || {};
+        // P570 = date of death
+        if (claims.P570) {
+          toRemove.add(r.title);
+          continue;
+        }
+        // Enrich description if empty
+        if (match.description && !r.description) {
+          r.description = match.description;
+          r.birth_year = extractBirthYear(match.description);
+        }
+      }
+    }
+    // Remove dead people and re-render
+    if (toRemove.size > 0) {
+      lastResults = lastResults.filter(r => !toRemove.has(r.title));
+      if (document.getElementById('search-input').value.trim() === query) {
+        fetchThumbnails(lastResults.map(x => x.title)).then(thumbs => {
+          if (document.getElementById('search-input').value.trim() === query)
+            renderResults(lastResults, query, thumbs);
+        });
+      }
+    }
+  } catch(e) {}
+}
+
 function handleKey(e) {
-  const box = document.getElementById('search-results');
-  if (box.style.display === 'none') return;
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    focusIndex = Math.min(focusIndex + 1, lastResults.length - 1);
-    renderResults(lastResults, lastQuery);
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    focusIndex = Math.max(focusIndex - 1, -1);
-    renderResults(lastResults, lastQuery);
-  } else if (e.key === 'Enter' && focusIndex >= 0) {
-    e.preventDefault();
-    const el = box.querySelector('.search-result.focused');
-    if (el) addPerson(el);
-  } else if (e.key === 'Escape') {
-    box.style.display = 'none';
-    focusIndex = -1;
+  if (e.key === 'Enter') {
+    const val = document.getElementById('search-input').value.trim();
+    if (val.length >= 2) goToResults(val);
+  }
+  if (e.key === 'Escape') {
+    document.getElementById('search-input').value = '';
   }
 }
 
