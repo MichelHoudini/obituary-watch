@@ -13,6 +13,7 @@ import sseclient
 import mwparserfromhell
 
 from app.db import get_all_watched_titles, record_death, is_already_dead, get_emails_for
+from app.email import send_death_notification
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -125,7 +126,18 @@ def run():
                 is_new = record_death(title, display_name, death_date, edit_url)
                 if is_new:
                     log.info(f"DEATH DETECTED: {display_name} — {death_date}")
-                    send_death_notification(title, display_name, death_date, edit_url)
+                    emails = get_emails_for(title)
+                    wiki_url = f"https://en.wikipedia.org/wiki/{title}"
+                    for email in emails:
+                        send_death_notification(
+                            to_email=email,
+                            person_name=display_name,
+                            wiki_title=title,
+                            death_date=death_date,
+                            wiki_url=wiki_url,
+                            edit_url=edit_url,
+                        )
+                    log.info(f"Notified {len(emails)} subscriber(s)")
 
                 count += 1
                 if count % REFRESH_EVERY == 0:

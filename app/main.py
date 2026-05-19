@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.db import init_db, add_watch
+from app.email import send_watch_confirmation
 
 app = FastAPI(title="ObituaryWatch", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -153,7 +154,13 @@ def save_watch(req: WatchReq):
         raise HTTPException(400, "Invalid email")
     if not req.wiki_title:
         raise HTTPException(400, "Invalid title")
-    # Store lang prefix with title so watcher knows which Wikipedia to monitor
     full_title = f"{req.lang}:{req.wiki_title.strip()}"
     add_watch(full_title, req.email.strip().lower())
+    # Send confirmation email
+    wiki_url = f"https://{req.lang}.wikipedia.org/wiki/{req.wiki_title}"
+    send_watch_confirmation(
+        to_email=req.email.strip().lower(),
+        person_name=req.wiki_title.replace("_", " "),
+        wiki_url=wiki_url,
+    )
     return {"ok": True}
