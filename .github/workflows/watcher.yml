@@ -1,0 +1,30 @@
+name: ObituaryWatch — Wikipedia Watcher
+
+on:
+  schedule:
+    # Runs every hour
+    - cron: '0 * * * *'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50  # Stop before next hour starts
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install requests sseclient-py mwparserfromhell psycopg2-binary
+
+      - name: Run watcher for 50 minutes
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: timeout 2900 python -m app.watcher || true
