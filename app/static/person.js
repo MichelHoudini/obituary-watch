@@ -156,8 +156,12 @@ async function load() {
 async function doWatch() {
   const email = document.getElementById('email').value.trim();
   const err   = document.getElementById('err');
+  const btn   = document.querySelector('.watch-btn');
   if (!email || !email.includes('@')) { err.textContent = 'enter a valid email.'; return; }
   err.textContent = '';
+  btn.textContent = 'sending...';
+  btn.disabled = true;
+  btn.style.opacity = '0.5';
   const r = await fetch('/watch', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -165,9 +169,12 @@ async function doWatch() {
   });
   if (r.ok) {
     document.getElementById('email').style.display = 'none';
-    document.querySelector('.watch-btn').style.display = 'none';
+    btn.style.display = 'none';
     document.getElementById('ok').style.display = 'block';
   } else {
+    btn.textContent = 'Watch';
+    btn.disabled = false;
+    btn.style.opacity = '1';
     err.textContent = 'something went wrong. try again.';
   }
 }
