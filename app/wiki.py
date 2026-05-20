@@ -6,8 +6,8 @@ Just what we need: name, photo, description, birth date, occupation.
 import httpx
 import re
 
-HEADERS = {"User-Agent": "ObituaryWatch/3.0 (wikipedia-death-monitor)"}
-WIKI_API = "https://en.wikipedia.org/w/api.php"
+HEADERS = {"User-Agent": "ObituaryWatch/3.0 (wikipedia-death-monitor)"
+def wiki_api(lang: str = "en") -> str:
 
 
 def title_from_url(url: str) -> str | None:
@@ -24,7 +24,7 @@ def title_from_url(url: str) -> str | None:
     return None
 
 
-def get_person_info(wiki_title: str) -> dict | None:
+def get_person_info(wiki_title: str, lang: str = "en") -> dict | None:
     """
     Fetch basic person info from Wikipedia API.
     Returns dict with: title, name, description, extract, thumbnail, url
@@ -32,7 +32,7 @@ def get_person_info(wiki_title: str) -> dict | None:
     """
     try:
         resp = httpx.get(
-            WIKI_API,
+            wiki_api(lang),
             params={
                 "action":      "query",
                 "titles":      wiki_title.replace("_", " "),
