@@ -6,6 +6,7 @@ POST /watch   → save email + wiki_title
 """
 
 import os, re, logging
+from urllib.parse import unquote
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ def person_page(url: str = ""):
     lang, title = title_from_url(url)
     if not title:
         return RedirectResponse("/")
+    title = unquote(title)
 
     # Escape for JS string literals
     safe_title = title.replace("\\", "\\\\").replace("'", "\\'")
