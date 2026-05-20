@@ -5,7 +5,7 @@ Sender: Mortivox <noreply@mortivox.com>
 """
 
 import os
-import httpxh
+import httpx
 import logging
 
 log = logging.getLogger(__name__)
