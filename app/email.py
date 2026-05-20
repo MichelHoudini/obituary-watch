@@ -1,17 +1,17 @@
 """
 email.py — Send death notification emails via Resend.
-Uses onboarding@resend.dev for now (free, no domain needed).
-When you have a domain, change FROM_EMAIL and verify it on resend.com.
+Uses noreply@mortivox.com (domínio verificado no Resend).
+Sender: Mortivox <noreply@mortivox.com>
 """
 
 import os
-import httpx
+import httpxh
 import logging
 
 log = logging.getLogger(__name__)
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-FROM_EMAIL     = "ObituaryWatch <onboarding@resend.dev>"
+FROM_EMAIL     = "Mortivox <noreply@mortivox.com>"
 RESEND_URL     = "https://api.resend.com/emails"
 
 
