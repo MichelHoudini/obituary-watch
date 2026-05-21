@@ -38,13 +38,10 @@ function getBirthYear(text) {
 
 function isDead(wikitext) {
   if (!wikitext) return false;
-  // Check for death_date field with a non-empty value
   const patterns = [
     /death_date\s*=\s*([^\|\}\n]{3,})/,
     /death date\s*=\s*([^\|\}\n]{3,})/,
-    // Hungarian
     /hal[aá]loz[aá]si.d[aá]tum\s*=\s*([^\|\}\n]{3,})/i,
-    // Common across many languages
     /\|\s*halott\s*=\s*([^\|\}\n]{3,})/i,
     /tod(?:esjahr|esdatum)\s*=\s*([^\|\}\n]{3,})/i,
     /date.?de.?d[eé]c[eè]s\s*=\s*([^\|\}\n]{3,})/i,
@@ -59,7 +56,6 @@ function isDead(wikitext) {
   return false;
 }
 
-// Show skeleton while loading
 document.getElementById('main').innerHTML = `
   <div class="card">
     <div class="person-top">
@@ -92,12 +88,11 @@ async function load() {
       return;
     }
 
-    // Check if person is already dead
     const wikitext = page.revisions?.[0]?.slots?.main?.['*'] ||
                      page.revisions?.[0]?.slots?.main?.content || '';
     if (isDead(wikitext)) {
       document.getElementById('main').innerHTML =
-        '<div style="text-align:center;color:#5a5650;padding:60px 0;font-style:italic">This person has already passed away.<br>ObituaryWatch only monitors living people.</div>';
+        '<div style="text-align:center;color:#5a5650;padding:60px 0;font-style:italic">This person has already passed away.<br>Mortivox only monitors living people.</div>';
       return;
     }
 
@@ -110,7 +105,7 @@ async function load() {
     const by      = getBirthYear(extract);
     const age     = by ? YEAR - by : null;
 
-    document.title = name + ' — ObituaryWatch';
+    document.title = name + ' — Mortivox';
 
     const photo = thumb
       ? `<img src="${thumb}" alt="${name}" class="photo">`
