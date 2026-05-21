@@ -10,6 +10,7 @@ from urllib.parse import unquote
 
 log = logging.getLogger(__name__)
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,13 +37,62 @@ def title_from_url(url: str):
         return None, None
     return m.group(1), m.group(2)
 
-def head(title="ObituaryWatch"):
+def fetch_og_data(lang: str, title: str) -> dict:
+    """Fetch name, description and image from Wikipedia API for OG tags."""
+    try:
+        api_url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}"
+        r = httpx.get(api_url, timeout=5, follow_redirects=True)
+        if r.status_code == 200:
+            data = r.json()
+            return {
+                "name": data.get("title", title.replace("_", " ")),
+                "description": data.get("description", ""),
+                "extract": data.get("extract", "")[:200],
+                "image": data.get("thumbnail", {}).get("source", "https://mortivox.com/static/logo.png"),
+            }
+    except Exception:
+        pass
+    return {
+        "name": title.replace("_", " "),
+        "description": "",
+        "extract": "",
+        "image": "https://mortivox.com/static/logo.png",
+    }
+
+def head(title="Mortivox", og: dict = None):
+    og = og or {}
+    og_title       = og.get("name", title)
+    og_description = og.get("description", "Be notified by email the moment they die.")
+    og_image       = og.get("image", "https://mortivox.com/static/logo.png")
+    og_url         = og.get("url", "https://mortivox.com")
+
+    # Build a richer description for the person page
+    if og.get("extract"):
+        og_description = og["extract"].rstrip(".") + "..."
+
+    person_title = f"Mortivox — {og_title}" if og.get("name") else "Mortivox"
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title>
+<title>{person_title}</title>
+<meta name="description" content="{og_description}">
+
+<!-- Open Graph -->
+<meta property="og:type"        content="website">
+<meta property="og:url"         content="{og_url}">
+<meta property="og:title"       content="{person_title}">
+<meta property="og:description" content="{og_description}">
+<meta property="og:image"       content="{og_image}">
+
+<!-- Twitter Card -->
+<meta name="twitter:card"        content="summary_large_image">
+<meta name="twitter:title"       content="{person_title}">
+<meta name="twitter:description" content="{og_description}">
+<meta name="twitter:image"       content="{og_image}">
+
 <link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=Courier+Prime:wght@300;400;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 <style>
@@ -93,9 +143,9 @@ FOOT = "</div></body></html>"
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTMLResponse(head() + """
-<h2 class="sr-only">ObituaryWatch — paste a Wikipedia link to get notified when someone dies</h2>
-<img src="/static/logo.png" alt="ObituaryWatch" class="logo">
-<div class="site-name">ObituaryWatch</div>
+<h2 class="sr-only">Mortivox — paste a Wikipedia link to get notified when someone dies</h2>
+<img src="/static/logo.png" alt="Mortivox" class="logo">
+<div class="site-name">Mortivox</div>
 <div class="site-tagline">know before everyone else</div>
 
 <div class="label">Paste a Wikipedia link</div>
@@ -131,11 +181,15 @@ def person_page(url: str = ""):
         return RedirectResponse("/")
     title = unquote(title)
 
+    # Fetch data server-side for OG tags
+    og = fetch_og_data(lang, title)
+    og["url"] = f"https://mortivox.com/person?url={url}"
+
     # Escape for JS string literals
     safe_title = title.replace("\\", "\\\\").replace("'", "\\'")
     safe_lang  = lang
 
-    return HTMLResponse(head("ObituaryWatch") + f"""
+    return HTMLResponse(head(og=og) + f"""
 <a class="back" href="/">&#8592; back</a>
 <div id="main"></div>
 
