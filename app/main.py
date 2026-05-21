@@ -223,4 +223,26 @@ def save_watch(req: WatchReq):
         wiki_url=wiki_url,
     )
     log.info(f"Confirmation email result: {result}")
+    @app.get("/sitemap.xml")
+def sitemap():
+    from app.db import get_all_titles
+    from fastapi.responses import Response
+    
+    titles = get_all_titles()  # retorna lista de "lang:Title"
+    
+    urls = ['<url><loc>https://mortivox.com/</loc></url>']
+    for t in titles:
+        if ':' in t:
+            lang, title = t.split(':', 1)
+        else:
+            lang, title = 'en', t
+        url = f"https://mortivox.com/person?url=https://{lang}.wikipedia.org/wiki/{title}"
+        urls.append(f'<url><loc>{url}</loc></url>')
+    
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    xml += '\n'.join(urls)
+    xml += '\n</urlset>'
+    
+    return Response(content=xml, media_type="application/xml")
     return {"ok": True}
