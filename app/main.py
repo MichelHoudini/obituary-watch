@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 import httpx
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, PlainTextResponse
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+
 
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -239,6 +239,7 @@ def save_watch(req: WatchReq):
     )
     log.info(f"Confirmation email result: {result}")
     return {"ok": True}
+    
 @app.get("/robots.txt")
 def robots_txt():
     content = """User-agent: *
