@@ -11,7 +11,7 @@ from urllib.parse import unquote
 log = logging.getLogger(__name__)
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, PlainTextResponse
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -240,7 +240,7 @@ def save_watch(req: WatchReq):
     log.info(f"Confirmation email result: {result}")
     return {"ok": True}
 
-   from fastapi.responses import PlainTextResponse
+   
 
 @app.get("/robots.txt")
 def robots_txt():
