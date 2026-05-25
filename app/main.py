@@ -239,3 +239,14 @@ def save_watch(req: WatchReq):
     )
     log.info(f"Confirmation email result: {result}")
     return {"ok": True}
+    @app.get("/")
+def home():
+    ...
+
+@app.get("/robots.txt")  # ← adicione aqui
+def robots_txt():
+    ...
+
+@app.get("/person")
+def person_page():
+    ...
