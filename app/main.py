@@ -239,14 +239,13 @@ def save_watch(req: WatchReq):
     )
     log.info(f"Confirmation email result: {result}")
     return {"ok": True}
-    @app.get("/")
-def home():
-    ...
 
-@app.get("/robots.txt")  # ← adicione aqui
+   from fastapi.responses import PlainTextResponse
+
+@app.get("/robots.txt")
 def robots_txt():
-    ...
+    content = """User-agent: *
+Disallow:
 
-@app.get("/person")
-def person_page():
-    ...
+Sitemap: https://mortivox.com/sitemap.xml"""
+    return PlainTextResponse(content)
