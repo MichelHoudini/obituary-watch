@@ -240,7 +240,8 @@ def save_watch(req: WatchReq):
     )
     log.info(f"Confirmation email result: {result}")
     return {"ok": True}
-    
+
+
 @app.get("/robots.txt")
 def robots_txt():
     content = """User-agent: *
