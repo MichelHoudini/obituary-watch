@@ -1,5 +1,5 @@
 """
-db.py — Database layer using PostgreSQL (Supabase).
+db.py - Database layer using PostgreSQL (Supabase).
 Falls back to SQLite for local development if DATABASE_URL is not set.
 """
 
@@ -18,7 +18,7 @@ def utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 
-# ── Connection ────────────────────────────────────────────────────────────────
+# Connection
 
 @contextmanager
 def get_conn():
@@ -57,7 +57,6 @@ def _exec(conn, sql, params=()):
 
 
 def _fetchall(cur):
-    """Normalize rows from both psycopg2 (tuple) and sqlite3 (Row)."""
     rows = cur.fetchall()
     if not rows:
         return []
@@ -77,7 +76,7 @@ def _fetchone(cur):
     return dict(row)
 
 
-# ── Schema ────────────────────────────────────────────────────────────────────
+# Schema
 
 def init_db():
     with get_conn() as conn:
@@ -123,7 +122,7 @@ def init_db():
             """)
 
 
-# ── Watches ───────────────────────────────────────────────────────────────────
+# Watches
 
 def add_watch(wiki_title: str, email: str) -> bool:
     with get_conn() as conn:
@@ -154,7 +153,14 @@ def get_all_watched_titles() -> set[str]:
     return {r["wiki_title"] for r in rows}
 
 
-# ── Deaths ────────────────────────────────────────────────────────────────────
+def get_watch_count() -> int:
+    with get_conn() as conn:
+        cur = _exec(conn, "SELECT COUNT(DISTINCT wiki_title) AS n FROM watches")
+        row = _fetchone(cur)
+    return row["n"] if row else 0
+
+
+# Deaths
 
 def record_death(wiki_title: str, display_name: str, death_date: str, edit_url: str = None) -> bool:
     wiki_url = f"https://en.wikipedia.org/wiki/{wiki_title}"
@@ -182,3 +188,20 @@ def is_already_dead(wiki_title: str) -> bool:
         ph = "%s" if USE_POSTGRES else "?"
         cur = _exec(conn, f"SELECT 1 FROM deaths WHERE wiki_title={ph}", (wiki_title,))
         return _fetchone(cur) is not None
+
+
+def get_deaths(limit: int = 10) -> list[dict]:
+    with get_conn() as conn:
+        ph = "%s" if USE_POSTGRES else "?"
+        cur = _exec(conn,
+            f"SELECT * FROM deaths ORDER BY detected_at DESC LIMIT {ph}",
+            (limit,)
+        )
+        return _fetchall(cur)
+
+
+def get_death_count() -> int:
+    with get_conn() as conn:
+        cur = _exec(conn, "SELECT COUNT(*) AS n FROM deaths")
+        row = _fetchone(cur)
+    return row["n"] if row else 0
