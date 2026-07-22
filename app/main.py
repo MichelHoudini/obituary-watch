@@ -298,15 +298,19 @@ def index(request: Request):
       document.getElementById('personName').textContent=fmt(title);
       document.getElementById('emailInput').focus();
       try {{
-        const r = await fetch('/person?wiki_title='+encodeURIComponent(title));
+        const apiUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${{encodeURIComponent(title.replace(/_/g,' '))}}&prop=pageimages|description&pithumbsize=300&redirects=true&format=json&origin=*`;
+        const r = await fetch(apiUrl);
         if(r.ok) {{
-          const d=await r.json();
-          document.getElementById('personName').textContent=d.name||fmt(title);
-          document.getElementById('personDesc').textContent=d.description||d.occupation||'';
-          if(d.thumbnail) {{
-            const img=document.getElementById('personThumb');
-            img.src=d.thumbnail; img.style.display='block';
-            document.getElementById('personThumbPlaceholder').style.display='none';
+          const data = await r.json();
+          const page = Object.values(data.query.pages)[0];
+          if(page && !page.missing) {{
+            if(page.description) document.getElementById('personDesc').textContent = page.description;
+            if(page.thumbnail && page.thumbnail.source) {{
+              const img = document.getElementById('personThumb');
+              img.src = page.thumbnail.source;
+              img.style.display = 'block';
+              document.getElementById('personThumbPlaceholder').style.display = 'none';
+            }}
           }}
         }}
       }} catch {{}}
