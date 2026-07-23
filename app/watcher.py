@@ -7,13 +7,12 @@ Sends email notification to all subscribers when death is detected.
 import json
 import logging
 import time
-import re
 import requests
 import sseclient
 import mwparserfromhell
 
 from app.db import get_all_watched_titles, record_death, is_already_dead, get_emails_for
-from app.email import send_death_notification
+from app.email import send_death_notification as send_death_email
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -52,34 +51,6 @@ def extract_death_date(wikitext: str) -> str | None:
     return None
 
 
-def send_death_notification(wiki_title: str, display_name: str, death_date: str, edit_url: str):
-    """
-    Send email notification to all watchers.
-    Email service to be implemented — for now logs to console.
-    Replace this function body with actual email sending (Gmail SMTP, SendGrid, etc.)
-    """
-    emails = get_emails_for(wiki_title)
-    if not emails:
-        log.info(f"No watchers for {display_name}")
-        return
-
-    log.info(f"SENDING NOTIFICATIONS: {display_name} died. Emailing {len(emails)} subscriber(s): {emails}")
-
-    # TODO: implement email sending here
-    # Example with Gmail SMTP:
-    # import smtplib
-    # from email.message import EmailMessage
-    # msg = EmailMessage()
-    # msg["Subject"] = f"ObituaryWatch: {display_name} has died"
-    # msg["From"] = "noreply@obituarywatch.com"
-    # msg.set_content(f"{display_name} has died.\n\nWikipedia: https://en.wikipedia.org/wiki/{wiki_title}")
-    # with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-    #     smtp.login(EMAIL_USER, EMAIL_PASS)
-    #     for email in emails:
-    #         msg["To"] = email
-    #         smtp.send_message(msg)
-
-
 def run():
     log.info("Starting ObituaryWatch watcher")
     watched  = get_all_watched_titles()
@@ -102,13 +73,18 @@ def run():
                 except Exception:
                     continue
 
-                if data.get("wiki") != "enwiki":         continue
-                if data.get("namespace") != 0:           continue
-                if data.get("type") not in ("edit","new"): continue
+                if data.get("wiki") != "enwiki":
+                    continue
+                if data.get("namespace") != 0:
+                    continue
+                if data.get("type") not in ("edit", "new"):
+                    continue
 
                 title = data.get("title", "").replace(" ", "_")
-                if title not in watched:                  continue
-                if is_already_dead(title):                continue
+                if title not in watched:
+                    continue
+                if is_already_dead(title):
+                    continue
 
                 log.info(f"Watched article edited: {title}")
                 wikitext = fetch_wikitext(title)
@@ -128,16 +104,18 @@ def run():
                     log.info(f"DEATH DETECTED: {display_name} — {death_date}")
                     emails = get_emails_for(title)
                     wiki_url = f"https://en.wikipedia.org/wiki/{title}"
+                    sent = 0
                     for email in emails:
-                        send_death_notification(
+                        if send_death_email(
                             to_email=email,
                             person_name=display_name,
                             wiki_title=title,
                             death_date=death_date,
                             wiki_url=wiki_url,
                             edit_url=edit_url,
-                        )
-                    log.info(f"Notified {len(emails)} subscriber(s)")
+                        ):
+                            sent += 1
+                    log.info(f"Notified {sent}/{len(emails)} subscriber(s)")
 
                 count += 1
                 if count % REFRESH_EVERY == 0:

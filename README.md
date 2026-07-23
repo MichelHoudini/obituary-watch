@@ -1,52 +1,86 @@
-# ObituaryWatch 🕯️
+# Mortivox 🕯️
 
-Zero-cost Wikipedia death monitor. Uses Wikipedia's RecentChanges stream (free, event-driven)
-and serves an RSS feed (no email infra needed).
+Wikipedia death monitor and public watch-page directory.
 
-## Architecture — cost: $0/month
+Mortivox watches selected Wikipedia pages through Wikimedia's live RecentChanges
+stream, records death-related changes, exposes a public detection log, and lets
+users subscribe to email notifications for specific profiles.
 
-```
-Wikipedia RecentChanges SSE stream
+## Architecture
+
+```text
+Wikimedia RecentChanges SSE stream
         │
         ▼
-   watcher.py  ←── filters edits for watched articles only
+   app/watcher.py  ── filters edits for monitored Wikipedia titles
         │
-        ▼ (death_date detected in infobox)
-   SQLite DB  ──→  FastAPI  ──→  RSS feed  ──→  User's RSS reader
+        ▼
+   PostgreSQL / SQLite
+        │
+        ├── FastAPI public site
+        ├── public person pages
+        ├── deaths log
+        ├── Atom RSS feed
+        └── email notifications via Resend
 ```
 
-- **No polling loops** — Wikipedia pushes edit events to us via SSE
-- **No email service** — RSS feed is read by any free RSS reader (Feedly, NewsBlur, etc.)
-- **SQLite** — zero-config, file-based, free forever
-- **FastAPI** — deploy free on Render.com or Railway.app
+## Main routes
 
-## Setup
+| Route | Description |
+|---|---|
+| `GET /` | Landing page and watch form |
+| `GET /people` | Public directory of monitored profiles |
+| `GET /person/{slug}` | Public watch page for a profile |
+| `GET /deaths` | Human-readable death detection log |
+| `GET /api/deaths` | JSON death detection log |
+| `GET /rss` | Atom feed of detected deaths |
+| `GET /lists/most-monitored` | Most subscribed pages |
+| `GET /lists/oldest-living` | Long-lived public figures watchlist |
+| `GET /lists/actors` | Actors watchlist |
+| `GET /lists/musicians` | Musicians watchlist |
+| `GET /sitemap.xml` | SEO sitemap |
+| `GET /robots.txt` | Robots policy with sitemap URL |
+| `GET /status` | Health/status payload |
+| `POST /watch` | Subscribe an email to a Wikipedia page |
+
+## Local setup
 
 ```bash
 pip install -r requirements.txt
-python -m app.seed          # add some initial people to watch
-python -m app.watcher       # start the RecentChanges listener (keep running)
-uvicorn app.main:app --reload  # start the API + RSS feed
+python -m app.seed
+uvicorn app.main:app --reload
 ```
 
-## Endpoints
+Run the watcher separately:
 
-| Endpoint | Description |
-|---|---|
-| `GET /` | Web UI — manage watchlist |
-| `GET /rss` | RSS feed of detected deaths |
-| `GET /rss/{list_name}` | RSS feed for a named list |
-| `POST /watch` | Add a person/category to watchlist |
-| `DELETE /watch/{title}` | Remove from watchlist |
-| `GET /deaths` | JSON list of detected deaths |
-| `GET /status` | Watcher health + stats |
+```bash
+python -m app.watcher
+```
 
-## Deploy free on Render.com
+If `DATABASE_URL` is set, Mortivox uses PostgreSQL. Otherwise it falls back to a
+local SQLite file named `obituary_watch.db`.
 
-1. Push to GitHub
-2. New Web Service → connect repo
-3. Build: `pip install -r requirements.txt`
-4. Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-5. Add a Background Worker for `python -m app.watcher`
+## Render deploy
 
-Both services are free tier on Render.
+Web service:
+
+```bash
+Build: pip install -r requirements.txt
+Start: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Background worker:
+
+```bash
+python -m app.watcher
+```
+
+Environment variables:
+
+```text
+DATABASE_URL
+RESEND_API_KEY
+```
+
+`app.main` seeds the curated catalog on startup into `monitored_titles`, so public
+watch pages exist even before individual users subscribe.
