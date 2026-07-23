@@ -237,6 +237,19 @@ def get_watch_count_for_title(wiki_title: str) -> int:
     return row["n"] if row else 0
 
 
+def get_watch_counts() -> dict:
+    """Batch version of get_watch_count_for_title. One query for all titles
+    instead of one query per title (avoids N+1 on /lists/most-monitored)."""
+    with get_conn() as conn:
+        cur = _exec(conn, """
+            SELECT wiki_title, COUNT(DISTINCT email) AS n
+            FROM watches
+            GROUP BY wiki_title
+        """)
+        rows = _fetchall(cur)
+    return {r["wiki_title"]: r["n"] for r in rows}
+
+
 def record_death(wiki_title: str, display_name: str, death_date: str, edit_url: str = None) -> bool:
     wiki_url = f"https://en.wikipedia.org/wiki/{wiki_title}"
     with get_conn() as conn:

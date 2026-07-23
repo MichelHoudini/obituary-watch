@@ -14,7 +14,7 @@ from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, tit
 from app.db import (
     init_db, add_watch, add_watched, get_all_watched_titles,
     get_deaths, get_watch_count, get_death_count,
-    get_watch_count_for_title, get_death_for_title,
+    get_watch_count_for_title, get_death_for_title, get_watch_counts,
 )
 from app.email import send_watch_confirmation
 from app.wiki import get_person_info
@@ -550,11 +550,12 @@ def list_page(list_slug: str, request: Request):
         raise HTTPException(404, "List not found")
 
     if list_slug == "most-monitored":
-        titles = sorted(get_all_watched_titles(), key=lambda t: get_watch_count_for_title(t), reverse=True)
+        counts = get_watch_counts()
+        titles = sorted(get_all_watched_titles(), key=lambda t: counts.get(t, 0), reverse=True)
         people = [{
             "wiki_title": t,
             "display_name": t.replace("_", " "),
-            "category": f"{get_watch_count_for_title(t)} watcher(s)",
+            "category": f"{counts.get(t, 0)} watcher(s)",
             "slug": title_to_slug(t),
         } for t in titles[:80]]
         if not people:
