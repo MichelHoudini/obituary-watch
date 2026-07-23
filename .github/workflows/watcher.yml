@@ -22,7 +22,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install requests sseclient-py mwparserfromhell psycopg2-binary
+        run: pip install requests sseclient-py mwparserfromhell psycopg2-binary httpx
 
       - name: Run watcher for 50 minutes
         env:
