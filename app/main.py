@@ -88,7 +88,7 @@ def skull_icon():
     import os, pathlib
     skull_path = pathlib.Path(__file__).parent / "skull.png"
     data = skull_path.read_bytes()
-    return Response(content=data, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+    return Response(content=data, media_type="image/png", headers={"Cache-Control": "public, max-age=300"})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -195,7 +195,7 @@ def index(request: Request):
 </head>
 <body>
   <section class="hero">
-    <img src="/skull.png" alt="mortivox" style="width:72px;height:72px;margin-bottom:28px;image-rendering:pixelated;">
+    <img src="/skull.png?v=3" alt="mortivox" style="width:72px;height:72px;margin-bottom:28px;image-rendering:pixelated;">
 
     <h1>mortivox</h1>
     <p class="tagline">paste a wikipedia link. get notified the exact moment someone dies.</p>
