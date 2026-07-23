@@ -10,7 +10,7 @@ from fastapi.responses import Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, title_to_slug
+from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, title_to_slug, get_list_people
 from app.db import (
     init_db, add_watch, add_watched, get_all_watched_titles,
     get_deaths, get_watch_count, get_death_count,
