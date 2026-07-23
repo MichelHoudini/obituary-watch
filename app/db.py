@@ -1,5 +1,5 @@
 """
-db.py - Database layer using PostgreSQL (Supabase).
+db.py - Database layer using PostgreSQL (Supabase/Render-compatible).
 Falls back to SQLite for local development if DATABASE_URL is not set.
 """
 
@@ -11,20 +11,17 @@ from contextlib import contextmanager
 log = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-USE_POSTGRES  = bool(DATABASE_URL)
+USE_POSTGRES = bool(DATABASE_URL)
 
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 
-# Connection
-
 @contextmanager
 def get_conn():
     if USE_POSTGRES:
         import psycopg2
-        import psycopg2.extras
         conn = psycopg2.connect(DATABASE_URL)
         conn.autocommit = False
         try:
@@ -76,7 +73,9 @@ def _fetchone(cur):
     return dict(row)
 
 
-# Schema
+def _ph():
+    return "%s" if USE_POSTGRES else "?"
+
 
 def init_db():
     with get_conn() as conn:
@@ -88,6 +87,16 @@ def init_db():
                     email      TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     UNIQUE(wiki_title, email)
+                )
+            """)
+            _exec(conn, """
+                CREATE TABLE IF NOT EXISTS monitored_titles (
+                    id           SERIAL PRIMARY KEY,
+                    wiki_title   TEXT UNIQUE NOT NULL,
+                    display_name TEXT,
+                    category     TEXT,
+                    birth_year   INTEGER,
+                    created_at   TEXT NOT NULL
                 )
             """)
             _exec(conn, """
@@ -110,6 +119,14 @@ def init_db():
                     created_at  TEXT NOT NULL,
                     UNIQUE(wiki_title, email)
                 );
+                CREATE TABLE IF NOT EXISTS monitored_titles (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    wiki_title   TEXT UNIQUE NOT NULL,
+                    display_name TEXT,
+                    category     TEXT,
+                    birth_year   INTEGER,
+                    created_at   TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS deaths (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     wiki_title   TEXT UNIQUE NOT NULL,
@@ -122,25 +139,55 @@ def init_db():
             """)
 
 
-# Watches
+def add_watched(wiki_title: str, display_name: str = None, category: str = None, birth_year: int = None) -> bool:
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    display_name = display_name or wiki_title.replace("_", " ")
+    with get_conn() as conn:
+        if USE_POSTGRES:
+            _exec(conn, """
+                INSERT INTO monitored_titles (wiki_title, display_name, category, birth_year, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (wiki_title) DO UPDATE SET
+                    display_name = COALESCE(EXCLUDED.display_name, monitored_titles.display_name),
+                    category = COALESCE(EXCLUDED.category, monitored_titles.category),
+                    birth_year = COALESCE(EXCLUDED.birth_year, monitored_titles.birth_year)
+            """, (wiki_title, display_name, category, birth_year, utcnow()))
+        else:
+            _exec(conn, """
+                INSERT INTO monitored_titles (wiki_title, display_name, category, birth_year, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(wiki_title) DO UPDATE SET
+                    display_name = COALESCE(excluded.display_name, monitored_titles.display_name),
+                    category = COALESCE(excluded.category, monitored_titles.category),
+                    birth_year = COALESCE(excluded.birth_year, monitored_titles.birth_year)
+            """, (wiki_title, display_name, category, birth_year, utcnow()))
+    return True
+
 
 def add_watch(wiki_title: str, email: str) -> bool:
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    email = email.strip().lower()
+    add_watched(wiki_title, wiki_title.replace("_", " "), "User-monitored page", None)
     with get_conn() as conn:
-        try:
-            _exec(conn,
-                "INSERT INTO watches (wiki_title, email, created_at) VALUES (%s, %s, %s)"
-                if USE_POSTGRES else
-                "INSERT INTO watches (wiki_title, email, created_at) VALUES (?,?,?)",
-                (wiki_title, email, utcnow())
-            )
-            return True
-        except Exception:
-            return False
+        if USE_POSTGRES:
+            cur = _exec(conn, """
+                INSERT INTO watches (wiki_title, email, created_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (wiki_title, email) DO NOTHING
+                RETURNING id
+            """, (wiki_title, email, utcnow()))
+            return _fetchone(cur) is not None
+        else:
+            cur = _exec(conn, """
+                INSERT OR IGNORE INTO watches (wiki_title, email, created_at)
+                VALUES (?, ?, ?)
+            """, (wiki_title, email, utcnow()))
+            return cur.rowcount > 0
 
 
 def get_emails_for(wiki_title: str) -> list[str]:
     with get_conn() as conn:
-        ph = "%s" if USE_POSTGRES else "?"
+        ph = _ph()
         cur = _exec(conn, f"SELECT email FROM watches WHERE wiki_title={ph}", (wiki_title,))
         rows = _fetchall(cur)
     return [r["email"] for r in rows]
@@ -148,51 +195,81 @@ def get_emails_for(wiki_title: str) -> list[str]:
 
 def get_all_watched_titles() -> set[str]:
     with get_conn() as conn:
-        cur = _exec(conn, "SELECT DISTINCT wiki_title FROM watches")
+        cur = _exec(conn, """
+            SELECT wiki_title FROM monitored_titles
+            UNION
+            SELECT wiki_title FROM watches
+        """)
         rows = _fetchall(cur)
     return {r["wiki_title"] for r in rows}
 
 
+def get_monitored_people(limit: int = 500) -> list[dict]:
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"""
+            SELECT wiki_title, display_name, category, birth_year, created_at
+            FROM monitored_titles
+            ORDER BY display_name ASC
+            LIMIT {ph}
+        """, (limit,))
+        return _fetchall(cur)
+
+
 def get_watch_count() -> int:
     with get_conn() as conn:
-        cur = _exec(conn, "SELECT COUNT(DISTINCT wiki_title) AS n FROM watches")
+        cur = _exec(conn, """
+            SELECT COUNT(*) AS n FROM (
+                SELECT wiki_title FROM monitored_titles
+                UNION
+                SELECT wiki_title FROM watches
+            ) x
+        """)
         row = _fetchone(cur)
     return row["n"] if row else 0
 
 
-# Deaths
+def get_watch_count_for_title(wiki_title: str) -> int:
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"SELECT COUNT(DISTINCT email) AS n FROM watches WHERE wiki_title={ph}", (wiki_title,))
+        row = _fetchone(cur)
+    return row["n"] if row else 0
+
 
 def record_death(wiki_title: str, display_name: str, death_date: str, edit_url: str = None) -> bool:
     wiki_url = f"https://en.wikipedia.org/wiki/{wiki_title}"
     with get_conn() as conn:
-        try:
-            if USE_POSTGRES:
-                _exec(conn,
-                    """INSERT INTO deaths (wiki_title, display_name, death_date, detected_at, wiki_url, edit_url)
-                       VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (wiki_title) DO NOTHING""",
-                    (wiki_title, display_name, death_date, utcnow(), wiki_url, edit_url)
-                )
-            else:
-                _exec(conn,
-                    """INSERT OR IGNORE INTO deaths (wiki_title, display_name, death_date, detected_at, wiki_url, edit_url)
-                       VALUES (?,?,?,?,?,?)""",
-                    (wiki_title, display_name, death_date, utcnow(), wiki_url, edit_url)
-                )
-            return True
-        except Exception:
-            return False
+        if USE_POSTGRES:
+            cur = _exec(conn, """
+                INSERT INTO deaths (wiki_title, display_name, death_date, detected_at, wiki_url, edit_url)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (wiki_title) DO NOTHING
+                RETURNING id
+            """, (wiki_title, display_name, death_date, utcnow(), wiki_url, edit_url))
+            return _fetchone(cur) is not None
+        else:
+            cur = _exec(conn, """
+                INSERT OR IGNORE INTO deaths (wiki_title, display_name, death_date, detected_at, wiki_url, edit_url)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (wiki_title, display_name, death_date, utcnow(), wiki_url, edit_url))
+            return cur.rowcount > 0
 
 
 def is_already_dead(wiki_title: str) -> bool:
+    return get_death_for_title(wiki_title) is not None
+
+
+def get_death_for_title(wiki_title: str) -> dict | None:
     with get_conn() as conn:
-        ph = "%s" if USE_POSTGRES else "?"
-        cur = _exec(conn, f"SELECT 1 FROM deaths WHERE wiki_title={ph}", (wiki_title,))
-        return _fetchone(cur) is not None
+        ph = _ph()
+        cur = _exec(conn, f"SELECT * FROM deaths WHERE wiki_title={ph}", (wiki_title,))
+        return _fetchone(cur)
 
 
 def get_deaths(limit: int = 10) -> list[dict]:
     with get_conn() as conn:
-        ph = "%s" if USE_POSTGRES else "?"
+        ph = _ph()
         cur = _exec(conn,
             f"SELECT * FROM deaths ORDER BY detected_at DESC LIMIT {ph}",
             (limit,)
