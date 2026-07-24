@@ -110,6 +110,17 @@ def init_db():
                     edit_url     TEXT
                 )
             """)
+            _exec(conn, """
+                CREATE TABLE IF NOT EXISTS watcher_health (
+                    key                 TEXT PRIMARY KEY,
+                    started_at          TEXT,
+                    heartbeat_at        TEXT,
+                    last_event_at       TEXT,
+                    last_checked_title  TEXT,
+                    last_error          TEXT,
+                    updated_at          TEXT
+                )
+            """)
         else:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS watches (
@@ -135,6 +146,15 @@ def init_db():
                     detected_at  TEXT NOT NULL,
                     wiki_url     TEXT NOT NULL,
                     edit_url     TEXT
+                );
+                CREATE TABLE IF NOT EXISTS watcher_health (
+                    key                 TEXT PRIMARY KEY,
+                    started_at          TEXT,
+                    heartbeat_at        TEXT,
+                    last_event_at       TEXT,
+                    last_checked_title  TEXT,
+                    last_error          TEXT,
+                    updated_at          TEXT
                 );
             """)
 
@@ -295,3 +315,74 @@ def get_death_count() -> int:
         cur = _exec(conn, "SELECT COUNT(*) AS n FROM deaths")
         row = _fetchone(cur)
     return row["n"] if row else 0
+
+
+# ── Watcher healthcheck ──────────────────────────────────────────────────────
+# Single-row healthcheck (key="watcher") so /status can report whether the
+# GitHub Actions watcher job is alive and progressing, or silently stuck.
+
+def record_watcher_start() -> None:
+    now = utcnow()
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn, f"""
+            INSERT INTO watcher_health (key, started_at, heartbeat_at, updated_at)
+            VALUES ('watcher', {ph}, {ph}, {ph})
+            ON CONFLICT (key) DO UPDATE SET
+                started_at = excluded.started_at,
+                heartbeat_at = excluded.heartbeat_at,
+                updated_at = excluded.updated_at
+        """, (now, now, now))
+
+
+def record_watcher_heartbeat() -> None:
+    now = utcnow()
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn, f"""
+            INSERT INTO watcher_health (key, heartbeat_at, updated_at)
+            VALUES ('watcher', {ph}, {ph})
+            ON CONFLICT (key) DO UPDATE SET
+                heartbeat_at = excluded.heartbeat_at,
+                updated_at = excluded.updated_at
+        """, (now, now))
+
+
+def record_watcher_event(title: str) -> None:
+    now = utcnow()
+    safe_title = (title or "")[:200]
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn, f"""
+            INSERT INTO watcher_health (key, last_event_at, last_checked_title, heartbeat_at, updated_at)
+            VALUES ('watcher', {ph}, {ph}, {ph}, {ph})
+            ON CONFLICT (key) DO UPDATE SET
+                last_event_at = excluded.last_event_at,
+                last_checked_title = excluded.last_checked_title,
+                heartbeat_at = excluded.heartbeat_at,
+                updated_at = excluded.updated_at
+        """, (now, safe_title, now, now))
+
+
+def record_watcher_error(error: str) -> None:
+    # Truncate defensively so a runaway exception message can't bloat the row.
+    # Caller is responsible for not passing secrets into `error`; this function
+    # only does length limiting, not redaction.
+    now = utcnow()
+    safe_error = (str(error) if error else "")[:500]
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn, f"""
+            INSERT INTO watcher_health (key, last_error, updated_at)
+            VALUES ('watcher', {ph}, {ph})
+            ON CONFLICT (key) DO UPDATE SET
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
+        """, (safe_error, now))
+
+
+def get_watcher_health() -> dict | None:
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"SELECT * FROM watcher_health WHERE key={ph}", ("watcher",))
+        return _fetchone(cur)
