@@ -11,7 +11,10 @@ import requests
 import sseclient
 import mwparserfromhell
 
-from app.db import get_all_watched_titles, record_death, is_already_dead, get_emails_for
+from app.db import (
+    get_all_watched_titles, record_death, is_already_dead, get_emails_for,
+    record_watcher_start, record_watcher_heartbeat, record_watcher_event, record_watcher_error,
+)
 from app.email import send_death_notification as send_death_email
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -21,6 +24,7 @@ STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange"
 WIKI_API   = "https://en.wikipedia.org/w/api.php"
 HEADERS    = {"User-Agent": "ObituaryWatch/3.0 (wikipedia-death-monitor)"}
 REFRESH_EVERY = 200
+HEARTBEAT_INTERVAL = 60  # seconds between DB heartbeat writes (avoid writing on every stream event)
 
 
 def fetch_wikitext(title: str) -> str | None:
@@ -53,10 +57,12 @@ def extract_death_date(wikitext: str) -> str | None:
 
 def run():
     log.info("Starting ObituaryWatch watcher")
+    record_watcher_start()
     watched  = get_all_watched_titles()
     log.info(f"Watching {len(watched)} articles")
     count   = 0
     backoff = 5
+    last_heartbeat_ts = 0.0
 
     while True:
         try:
@@ -66,6 +72,11 @@ def run():
             backoff = 5
 
             for event in client.events():
+                now_ts = time.time()
+                if now_ts - last_heartbeat_ts >= HEARTBEAT_INTERVAL:
+                    record_watcher_heartbeat()
+                    last_heartbeat_ts = now_ts
+
                 if not event.data:
                     continue
                 try:
@@ -87,6 +98,7 @@ def run():
                     continue
 
                 log.info(f"Watched article edited: {title}")
+                record_watcher_event(title)
                 wikitext = fetch_wikitext(title)
                 if not wikitext or "death_date" not in wikitext:
                     continue
@@ -124,6 +136,7 @@ def run():
 
         except Exception as e:
             log.error(f"Stream error: {e}. Reconnecting in {backoff}s")
+            record_watcher_error(e)
             time.sleep(backoff)
             backoff = min(backoff * 2, 300)
 

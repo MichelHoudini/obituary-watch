@@ -3,6 +3,9 @@ main.py - FastAPI app for Mortivox.
 """
 
 import html
+import json
+import os
+from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,12 +18,13 @@ from app.db import (
     init_db, add_watch, add_watched, get_all_watched_titles,
     get_deaths, get_watch_count, get_death_count,
     get_watch_count_for_title, get_death_for_title, get_watch_counts,
+    get_watcher_health,
 )
 from app.email import send_watch_confirmation
 from app.wiki import get_person_info
 from app.rss import build_global_feed
 
-app = FastAPI(title="Mortivox", version="3.1.0")
+app = FastAPI(title="Mortivox", version="3.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,6 +32,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Analytics (optional, env-var driven) ─────────────────────────────────────
+# If ANALYTICS_PROVIDER is unset/empty, no script is rendered and the site
+# behaves exactly as before. No keys are hardcoded; everything comes from env.
+ANALYTICS_PROVIDER   = os.environ.get("ANALYTICS_PROVIDER", "").strip().lower()
+ANALYTICS_DOMAIN     = os.environ.get("ANALYTICS_DOMAIN", "").strip()
+ANALYTICS_SCRIPT_URL = os.environ.get("ANALYTICS_SCRIPT_URL", "").strip()
+ANALYTICS_WEBSITE_ID = os.environ.get("ANALYTICS_WEBSITE_ID", "").strip()
+
+# How stale the watcher's last heartbeat can be before /status flags it.
+# GitHub Actions runs the watcher hourly, so 2h30 gives room for one missed run.
+WATCHER_STALE_HOURS = 2.5
 
 
 @app.on_event("startup")
@@ -54,8 +70,53 @@ def e(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 
+def js(value) -> str:
+    """Safely embed a Python value as a JS literal inside an inline <script>
+    tag. Uses json.dumps (correct for JS, unlike html.escape) and additionally
+    escapes '</' so the value can never prematurely close the script tag."""
+    return json.dumps(value).replace("</", r"<\/")
+
+
 def wiki_url(title: str) -> str:
     return f"https://en.wikipedia.org/wiki/{quote(title)}"
+
+
+def analytics_snippet() -> str:
+    """Render an analytics <script> tag based on env vars, or nothing at all.
+
+    Fails safe: any missing required value for the selected provider means
+    no script is rendered (never raises, never breaks the page)."""
+    if ANALYTICS_PROVIDER == "plausible":
+        if not ANALYTICS_DOMAIN:
+            return ""
+        src = ANALYTICS_SCRIPT_URL or "https://plausible.io/js/script.js"
+        return f'<script defer data-domain="{e(ANALYTICS_DOMAIN)}" src="{e(src)}"></script>'
+    if ANALYTICS_PROVIDER == "umami":
+        # Umami's script tag needs a website id in addition to the script URL.
+        # We read it from ANALYTICS_WEBSITE_ID; if either is missing, skip.
+        if not ANALYTICS_SCRIPT_URL or not ANALYTICS_WEBSITE_ID:
+            return ""
+        return f'<script defer src="{e(ANALYTICS_SCRIPT_URL)}" data-website-id="{e(ANALYTICS_WEBSITE_ID)}"></script>'
+    return ""
+
+
+def tracking_script() -> str:
+    """Always-present, always-safe event helper.
+
+    window.trackEvent(name, props) no-ops if no analytics provider loaded.
+    Only ever pass non-personal fields (wiki_title, slug, page_type,
+    category, success) — never email or other personal data."""
+    return """
+    <script>
+      window.trackEvent = function(name, props) {
+        try {
+          props = props || {};
+          if (typeof window.plausible === 'function') { window.plausible(name, {props: props}); return; }
+          if (window.umami && typeof window.umami.track === 'function') { window.umami.track(name, props); return; }
+        } catch (err) {}
+      };
+    </script>
+    """
 
 
 CSS = """
@@ -107,6 +168,8 @@ def layout(request: Request, title: str, description: str, body: str, canonical_
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
   <style>{CSS}</style>
+  {analytics_snippet()}
+  {tracking_script()}
 </head>
 <body>{body}</body>
 </html>"""
@@ -213,14 +276,35 @@ def list_deaths_api(limit: int = 50):
     return get_deaths(limit)
 
 
+def _watcher_is_stale(health: dict | None) -> bool:
+    """True if the watcher has never reported in, or its last heartbeat is
+    older than WATCHER_STALE_HOURS. GitHub Actions runs the watcher hourly,
+    so this tolerates one missed run before flagging a problem."""
+    if not health or not health.get("heartbeat_at"):
+        return True
+    try:
+        heartbeat = datetime.fromisoformat(health["heartbeat_at"])
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - heartbeat
+        return age > timedelta(hours=WATCHER_STALE_HOURS)
+    except Exception:
+        # Malformed timestamp is treated as stale rather than raising —
+        # /status must never 500 because of a healthcheck row.
+        return True
+
+
 @app.get("/status")
 def status(request: Request):
+    health = get_watcher_health()
     return {
         "watching": get_watch_count(),
         "deaths_detected": get_death_count(),
         "rss_feed": f"{base_url(request)}/rss",
         "people": f"{base_url(request)}/people",
         "sitemap": f"{base_url(request)}/sitemap.xml",
+        "watcher_health": health,
+        "watcher_is_stale": _watcher_is_stale(health),
     }
 
 
@@ -386,6 +470,7 @@ def index(request: Request):
     document.getElementById('emailInput').addEventListener('keypress',e=>{{if(e.key==='Enter')submitWatch();}});
     async function submitWatch() {{
       if(!currentTitle) return;
+      trackEvent('click_monitor', {{wiki_title: currentTitle, slug: slugifyTitle(currentTitle), page_type: 'home'}});
       const email=document.getElementById('emailInput').value.trim();
       if(!email||!email.includes('@')) {{
         const i=document.getElementById('emailInput');
@@ -394,14 +479,26 @@ def index(request: Request):
       }}
       const btn=document.getElementById('monitorBtn');
       btn.textContent='...'; btn.disabled=true;
+      trackEvent('submit_watch', {{wiki_title: currentTitle, slug: slugifyTitle(currentTitle)}});
       try {{
         const r=await fetch('/watch',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{wiki_title:currentTitle,email}})}});
         const d=await r.json();
         document.getElementById('step2').classList.remove('visible');
         document.getElementById('successMsg').classList.add('visible');
-        document.getElementById('successText').innerHTML=(d.added?'now monitoring ':'already watching ')+fmt(currentTitle)+' · <a href="/person/'+slugifyTitle(currentTitle)+'">public page</a>';
+        const success = document.getElementById('successText');
+        success.textContent = '';
+        const prefix = (d.added ? 'now monitoring ' : 'already watching ') + fmt(currentTitle) + ' · ';
+        success.appendChild(document.createTextNode(prefix));
+        const link = document.createElement('a');
+        link.href = '/person/' + slugifyTitle(currentTitle);
+        link.textContent = 'public page';
+        success.appendChild(link);
         document.getElementById('mainHint').style.display='none';
-      }} catch(e) {{btn.innerHTML='error — try again';btn.disabled=false;}}
+        trackEvent('watch_success', {{wiki_title: currentTitle, slug: slugifyTitle(currentTitle), success: true}});
+      }} catch(e) {{
+        btn.innerHTML='error — try again';btn.disabled=false;
+        trackEvent('watch_error', {{wiki_title: currentTitle, slug: slugifyTitle(currentTitle), success: false}});
+      }}
     }}
     function resetFlow() {{
       currentTitle=null;
@@ -492,7 +589,14 @@ def public_person(slug: str, request: Request):
     birth = (info or {}).get("birth_date") or (info or {}).get("birth_year") or (catalog_person or {}).get("birth_year")
     death = get_death_for_title((info or {}).get("title") or title)
     watch_count = get_watch_count_for_title((info or {}).get("title") or title)
-    status = "death detected" if death else "no death detected by Mortivox"
+    # Wording deliberately avoids asserting the person is alive. Mortivox only
+    # reports what it has detected in its own database, not a biographical claim.
+    status_sentence = (
+        f"Mortivox has detected a death update for {name}."
+        if death else
+        "Mortivox has not detected a death update for this Wikipedia page."
+    )
+    status = "death update detected" if death else "no death update detected by Mortivox"
     badge = "danger" if death else "ok"
     image = f'<img class="avatar" src="{e(thumb)}" alt="{e(name)}">' if thumb else f'<div class="avatar-placeholder">{e(name[:1])}</div>'
 
@@ -505,6 +609,13 @@ def public_person(slug: str, request: Request):
           {f'<p style="margin-top:12px"><a class="button secondary" href="{e(death.get("edit_url"))}">view detected edit</a></p>' if death.get("edit_url") else ""}
         </div>
         """
+
+    canonical_title = (info or {}).get("title") or title
+    watch_href = f"/?watch={e(canonical_title)}"
+    monitor_click_js = (
+        f'trackEvent("click_monitor", {{"wiki_title": {js(canonical_title)}, '
+        f'"slug": {js(canonical_slug)}, "page_type": "person", "category": {js(category)}}})'
+    )
 
     body = f"""
     <main class="page"><div class="container">
@@ -524,14 +635,34 @@ def public_person(slug: str, request: Request):
       </div>
       {death_block}
       <div class="panel" style="display:block">
+        <div class="card-title" style="margin-bottom:8px">Is {e(name)} being monitored?</div>
+        <p class="card-meta" style="font-size:14px;line-height:1.7">{e(status_sentence)} Mortivox is watching this Wikipedia page and will keep checking for updates.</p>
+      </div>
+      <div class="panel" style="display:block;margin-top:12px">
+        <div class="card-title" style="margin-bottom:8px">How Mortivox detects changes</div>
+        <p class="card-meta" style="font-size:14px;line-height:1.7">Mortivox listens to Wikipedia's live edit stream and checks watched pages for death-related infobox changes shortly after they are published.</p>
+      </div>
+      <div class="panel" style="display:block;margin-top:12px">
+        <div class="card-title" style="margin-bottom:8px">How to get notified</div>
+        <p class="card-meta" style="font-size:14px;line-height:1.7">Enter your email on the Mortivox homepage for this Wikipedia page to receive an alert if a death update is detected.</p>
+      </div>
+      <div class="panel" style="display:block;margin-top:24px">
         <div class="card-title" style="margin-bottom:8px">About this page</div>
         <p class="card-meta" style="font-size:14px;line-height:1.7">{e(extract)}</p>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:22px">
           <a class="button" href="{e(wiki_url((info or {}).get("title") or title))}" target="_blank" rel="noopener">view Wikipedia</a>
-          <a class="button secondary" href="/?watch={e((info or {}).get("title") or title)}">monitor this person</a>
+          <a class="button secondary" href="{watch_href}" onclick="{e(monitor_click_js)}">monitor this person</a>
         </div>
       </div>
     </div></main>{footer()}
+    <script>
+      trackEvent('view_person_page', {{
+        wiki_title: {js(canonical_title)},
+        slug: {js(canonical_slug)},
+        page_type: 'person',
+        category: {js(category)}
+      }});
+    </script>
     """
     return layout(
         request,
