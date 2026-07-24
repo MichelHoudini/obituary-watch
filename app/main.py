@@ -485,7 +485,14 @@ def index(request: Request):
         const d=await r.json();
         document.getElementById('step2').classList.remove('visible');
         document.getElementById('successMsg').classList.add('visible');
-        document.getElementById('successText').innerHTML=(d.added?'now monitoring ':'already watching ')+fmt(currentTitle)+' · <a href="/person/'+slugifyTitle(currentTitle)+'">public page</a>';
+        const success = document.getElementById('successText');
+        success.textContent = '';
+        const prefix = (d.added ? 'now monitoring ' : 'already watching ') + fmt(currentTitle) + ' · ';
+        success.appendChild(document.createTextNode(prefix));
+        const link = document.createElement('a');
+        link.href = '/person/' + slugifyTitle(currentTitle);
+        link.textContent = 'public page';
+        success.appendChild(link);
         document.getElementById('mainHint').style.display='none';
         trackEvent('watch_success', {{wiki_title: currentTitle, slug: slugifyTitle(currentTitle), success: true}});
       }} catch(e) {{
