@@ -322,7 +322,7 @@ def sitemap(request: Request):
         for path in paths
     )
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{urls}\n</urlset>\n'
-    return Response(content=xml, media_type="application/xml")
+    return Response(content=xml, media_type="application/xml; charset=utf-8")
 
 
 @app.get("/skull.png", response_class=Response)
