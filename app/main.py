@@ -34,12 +34,22 @@ app.add_middleware(
 )
 
 # ── Analytics (optional, env-var driven) ─────────────────────────────────────
-# If ANALYTICS_PROVIDER is unset/empty, no script is rendered and the site
-# behaves exactly as before. No keys are hardcoded; everything comes from env.
-ANALYTICS_PROVIDER   = os.environ.get("ANALYTICS_PROVIDER", "").strip().lower()
-ANALYTICS_DOMAIN     = os.environ.get("ANALYTICS_DOMAIN", "").strip()
-ANALYTICS_SCRIPT_URL = os.environ.get("ANALYTICS_SCRIPT_URL", "").strip()
-ANALYTICS_WEBSITE_ID = os.environ.get("ANALYTICS_WEBSITE_ID", "").strip()
+# ANALYTICS_HEAD_SNIPPET holds the exact HTML/JS snippet the analytics
+# provider gives you (Plausible, Umami, or anything else), pasted as-is.
+# If unset/empty, nothing is rendered and the site behaves exactly as before.
+#
+# Why a raw snippet instead of provider-specific env vars: analytics
+# providers change their embed format over time (e.g. Plausible's Oct 2025
+# script update dropped the data-domain attribute and now ships a unique,
+# two-tag snippet per site — https://plausible.io/docs/script-update-guide).
+# A raw snippet means this code never needs to change again when a provider
+# changes its markup; only the env var value does.
+#
+# This is operator-controlled (set via Render's dashboard/API, not by site
+# visitors), so injecting it verbatim into <head> carries the same trust
+# level as any other env var (DATABASE_URL, RESEND_API_KEY, etc.) — it is
+# not user input and not an XSS vector from the public.
+ANALYTICS_HEAD_SNIPPET = os.environ.get("ANALYTICS_HEAD_SNIPPET", "").strip()
 
 # How stale the watcher's last heartbeat can be before /status flags it.
 # GitHub Actions runs the watcher hourly, so 2h30 gives room for one missed run.
@@ -82,22 +92,10 @@ def wiki_url(title: str) -> str:
 
 
 def analytics_snippet() -> str:
-    """Render an analytics <script> tag based on env vars, or nothing at all.
-
-    Fails safe: any missing required value for the selected provider means
-    no script is rendered (never raises, never breaks the page)."""
-    if ANALYTICS_PROVIDER == "plausible":
-        if not ANALYTICS_DOMAIN:
-            return ""
-        src = ANALYTICS_SCRIPT_URL or "https://plausible.io/js/script.js"
-        return f'<script defer data-domain="{e(ANALYTICS_DOMAIN)}" src="{e(src)}"></script>'
-    if ANALYTICS_PROVIDER == "umami":
-        # Umami's script tag needs a website id in addition to the script URL.
-        # We read it from ANALYTICS_WEBSITE_ID; if either is missing, skip.
-        if not ANALYTICS_SCRIPT_URL or not ANALYTICS_WEBSITE_ID:
-            return ""
-        return f'<script defer src="{e(ANALYTICS_SCRIPT_URL)}" data-website-id="{e(ANALYTICS_WEBSITE_ID)}"></script>'
-    return ""
+    """Return the operator-configured analytics snippet verbatim, or nothing
+    at all if ANALYTICS_HEAD_SNIPPET is unset. Fails safe: an empty env var
+    means no script is rendered (never raises, never breaks the page)."""
+    return ANALYTICS_HEAD_SNIPPET
 
 
 def tracking_script() -> str:
