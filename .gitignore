@@ -1,4 +1,8 @@
-﻿venv/
+venv/
 __pycache__/
 *.pyc
 obituary_watch.db
+.env
+.env.*
+*.pem
+*.key
