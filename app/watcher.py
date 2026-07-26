@@ -6,6 +6,7 @@ Sends email notification to all subscribers when death is detected.
 
 import json
 import logging
+import re
 import time
 import requests
 import sseclient
@@ -40,6 +41,17 @@ def fetch_wikitext(title: str) -> str | None:
         return None
 
 
+# Wikipedia's Person infobox template commonly ships with this exact
+# boilerplate comment in the death_date field as an editor hint, even on
+# articles about people who are alive:
+#   <!-- {{Death date and age|YYYY|MM|DD|YYYY|MM|DD}} (DEATH date then BIRTH date) -->
+# A naive "field is non-empty" check treats this as a real death date. This
+# caused a false positive on Clint Eastwood (still alive) on 2026-07-26: the
+# triggering edit was an unrelated Filmography change, and the death_date
+# field had carried this exact placeholder the whole time.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
 def extract_death_date(wikitext: str) -> str | None:
     try:
         parsed = mwparserfromhell.parse(wikitext)
@@ -48,8 +60,16 @@ def extract_death_date(wikitext: str) -> str | None:
                 continue
             if t.has("death_date"):
                 val = str(t.get("death_date").value).strip()
-                if val:
-                    return val
+                if not val:
+                    continue
+                # Strip HTML comments before validating. If the value is
+                # nothing but a comment (the placeholder case above), or has
+                # no real date data (a genuine date always has a 4-digit
+                # year), it isn't an actual death date.
+                real_content = _HTML_COMMENT_RE.sub("", val).strip()
+                if not real_content or not re.search(r"\d{4}", real_content):
+                    continue
+                return val
     except Exception:
         pass
     return None
