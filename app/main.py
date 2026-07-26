@@ -18,7 +18,7 @@ from app.db import (
     init_db, add_watch, add_watched, get_all_watched_titles,
     get_deaths, get_watch_count, get_death_count,
     get_watch_count_for_title, get_death_for_title, get_watch_counts,
-    get_watcher_health,
+    get_watcher_health, remove_false_death_detections,
 )
 from app.email import send_watch_confirmation
 from app.wiki import get_person_info
@@ -60,6 +60,9 @@ WATCHER_STALE_HOURS = 2.5
 def startup():
     init_db()
     seed_catalog_titles()
+    removed = remove_false_death_detections()
+    if removed:
+        print(f"[startup] removed {len(removed)} false death detection(s): {removed}")
 
 
 def seed_catalog_titles():
