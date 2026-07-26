@@ -2,8 +2,14 @@ name: ObituaryWatch — Wikipedia Watcher
 
 on:
   schedule:
-    # Runs every hour
-    - cron: '0 * * * *'
+    # Runs every 2 hours (was hourly). Halves Actions minute consumption on
+    # this private repo -- 24 runs/day at ~44min avg was ~1000+ min/day,
+    # blowing through the 2000 min/month free tier limit in a few days.
+    # Each run still uses close to the full window once started, so when
+    # it's live it's fully live; the tradeoff is a longer gap (up to ~72min
+    # instead of ~16min) between runs where a death could go undetected a
+    # bit longer, not a shorter/lower-quality stream connection.
+    - cron: '0 */2 * * *'
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 jobs:
