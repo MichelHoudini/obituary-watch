@@ -289,6 +289,39 @@ def record_death(wiki_title: str, display_name: str, death_date: str, edit_url: 
             return cur.rowcount > 0
 
 
+def remove_false_death_detections() -> list[str]:
+    """Data repair for a fixed bug: extract_death_date() in watcher.py used to
+    accept Wikipedia's boilerplate placeholder comment in the death_date
+    field --
+      <!-- {{Death date and age|YYYY|MM|DD|YYYY|MM|DD}} (DEATH date then BIRTH date) -->
+    -- as if it were a real filled-in date, since it only checked the field
+    was non-empty. This deletes any `deaths` row whose stored death_date,
+    once HTML comments are stripped, contains no real date data (no 4-digit
+    year). Safe to run on every startup: it is a no-op once the bad rows are
+    gone, since the underlying bug is already fixed and can't create new
+    ones. Returns the list of wiki_titles removed, for logging."""
+    import re
+    comment_re = re.compile(r"<!--.*?-->", re.DOTALL)
+    with get_conn() as conn:
+        cur = _exec(conn, "SELECT wiki_title, death_date FROM deaths")
+        rows = _fetchall(cur)
+
+    bad_titles = []
+    for r in rows:
+        raw = r.get("death_date") or ""
+        real_content = comment_re.sub("", raw).strip()
+        if not real_content or not re.search(r"\d{4}", real_content):
+            bad_titles.append(r["wiki_title"])
+
+    if bad_titles:
+        with get_conn() as conn:
+            ph = _ph()
+            for title in bad_titles:
+                _exec(conn, f"DELETE FROM deaths WHERE wiki_title={ph}", (title,))
+
+    return bad_titles
+
+
 def is_already_dead(wiki_title: str) -> bool:
     return get_death_for_title(wiki_title) is not None
 
