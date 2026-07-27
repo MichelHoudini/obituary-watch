@@ -12,6 +12,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, title_to_slug, get_list_people
 from app.db import (
@@ -24,7 +27,16 @@ from app.email import send_watch_confirmation
 from app.wiki import get_person_info
 from app.rss import build_global_feed
 
-app = FastAPI(title="Mortivox", version="3.2.0")
+app = FastAPI(title="Mortivox", version="3.3.0")
+
+# Rate limiting: prevents mass-subscribe spam on /watch, keyed by client IP.
+# This app has one endpoint that writes to the DB and sends an email on every
+# call (POST /watch) -- without a limit, it was open to being hammered with
+# fake subscriptions, especially now that the source is public and anyone
+# can read exactly how the endpoint works.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -245,6 +257,7 @@ class WatchRequest(BaseModel):
 
 
 @app.post("/watch")
+@limiter.limit("5/minute")
 def add_watch_endpoint(req: WatchRequest, request: Request):
     if not req.wiki_title or not req.email:
         raise HTTPException(400, "wiki_title and email are required")
