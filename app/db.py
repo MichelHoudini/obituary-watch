@@ -183,6 +183,40 @@ def add_watched(wiki_title: str, display_name: str = None, category: str = None,
             """, (wiki_title, display_name, category, birth_year, utcnow()))
     return True
 
+def seed_watched(titles: list[dict]) -> None:
+    """Upsert the curated catalog in one database connection."""
+    rows = [
+        (
+            person["wiki_title"].strip().replace(" ", "_"),
+            person.get("display_name") or person["wiki_title"].replace("_", " "),
+            person.get("category"),
+            person.get("birth_year"),
+            utcnow(),
+        )
+        for person in titles
+    ]
+    if not rows:
+        return
+
+    with get_conn() as conn:
+        if USE_POSTGRES:
+            conn.cursor().executemany("""
+                INSERT INTO monitored_titles (wiki_title, display_name, category, birth_year, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (wiki_title) DO UPDATE SET
+                    display_name = COALESCE(EXCLUDED.display_name, monitored_titles.display_name),
+                    category = COALESCE(EXCLUDED.category, monitored_titles.category),
+                    birth_year = COALESCE(EXCLUDED.birth_year, monitored_titles.birth_year)
+            """, rows)
+        else:
+            conn.executemany("""
+                INSERT INTO monitored_titles (wiki_title, display_name, category, birth_year, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(wiki_title) DO UPDATE SET
+                    display_name = COALESCE(excluded.display_name, monitored_titles.display_name),
+                    category = COALESCE(excluded.category, monitored_titles.category),
+                    birth_year = COALESCE(excluded.birth_year, monitored_titles.birth_year)
+            """, rows)
 
 def add_watch(wiki_title: str, email: str) -> bool:
     wiki_title = wiki_title.strip().replace(" ", "_")
