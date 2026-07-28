@@ -18,7 +18,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, title_to_slug, get_list_people
 from app.db import (
-    init_db, add_watch, add_watched, get_all_watched_titles,
+    init_db, add_watch, seed_watched, get_all_watched_titles,
     get_deaths, get_watch_count, get_death_count,
     get_watch_count_for_title, get_death_for_title, get_watch_counts,
     get_watcher_health, remove_false_death_detections,
@@ -78,13 +78,7 @@ def startup():
 
 
 def seed_catalog_titles():
-    for person in CATALOG:
-        add_watched(
-            person["wiki_title"],
-            person["display_name"],
-            person["category"],
-            person.get("birth_year"),
-        )
+    seed_watched(CATALOG)
 
 
 def base_url(request: Request) -> str:
