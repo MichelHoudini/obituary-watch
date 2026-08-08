@@ -5,6 +5,7 @@ main.py - FastAPI app for Mortivox.
 import html
 import json
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
@@ -98,6 +99,31 @@ def js(value) -> str:
 
 def wiki_url(title: str) -> str:
     return f"https://en.wikipedia.org/wiki/{quote(title)}"
+
+
+_MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"]
+
+
+def format_death_date(raw: str | None) -> str:
+    """Turn a raw {{Death date and age|Y|M|D|...}} wikitext value into a
+    human-readable date like 'October 1, 2025'. The template's first three
+    numeric parameters are always the death date (birth date, if present,
+    comes after) -- https://en.wikipedia.org/wiki/Template:Death_date_and_age
+
+    Falls back to returning the raw value unchanged if it doesn't match
+    this shape, so nothing is ever hidden -- just formatted when we can."""
+    if not raw:
+        return "confirmed"
+    match = re.search(
+        r"\{\{\s*[Dd]eath date(?: and age)?\s*\|\s*(\d{4})\s*\|\s*(\d{1,2})\s*\|\s*(\d{1,2})",
+        raw,
+    )
+    if match:
+        year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        if 1 <= month <= 12:
+            return f"{_MONTH_NAMES[month]} {day}, {year}"
+    return raw
 
 
 def analytics_snippet() -> str:
@@ -226,7 +252,7 @@ def person_card(person: dict, info: dict | None = None, extra: str = "") -> str:
 
 def death_card(row: dict) -> str:
     slug = title_to_slug(row["wiki_title"])
-    death_date = row.get("death_date") or "confirmed"
+    death_date = format_death_date(row.get("death_date"))
     return f"""
     <a class="alert-card" href="/person/{e(slug)}">
       <div class="alert-dot" style="width:8px;height:8px;border-radius:50%;background:var(--mv-danger);box-shadow:0 0 8px var(--mv-danger-glow);flex-shrink:0"></div>
@@ -613,7 +639,7 @@ def public_person(slug: str, request: Request):
         death_block = f"""
         <div class="panel" style="display:block;margin:24px 0">
           <div class="card-title">Death detected</div>
-          <div class="card-meta">Detected {e(str(death.get("detected_at", ""))[:10])}. Death date field: {e(death.get("death_date") or "not confirmed")}</div>
+          <div class="card-meta">Detected {e(str(death.get("detected_at", ""))[:10])}. Death date: {e(format_death_date(death.get("death_date")))}</div>
           {f'<p style="margin-top:12px"><a class="button secondary" href="{e(death.get("edit_url"))}">view detected edit</a></p>' if death.get("edit_url") else ""}
         </div>
         """
