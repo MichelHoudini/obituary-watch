@@ -22,10 +22,11 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install requests psycopg2-binary
+        run: pip install requests psycopg2-binary sentry-sdk
 
       - name: Run milestone notifier
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: python -m app.milestones

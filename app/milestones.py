@@ -11,8 +11,10 @@ import os
 import requests
 
 from app.db import USE_POSTGRES, _exec, _fetchall, get_conn
+from app.observability import setup_logging, setup_sentry
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+setup_logging()
+setup_sentry("milestones")
 log = logging.getLogger(__name__)
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")

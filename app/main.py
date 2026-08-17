@@ -33,8 +33,12 @@ from app.db import (
     seed_watched,
 )
 from app.email import send_watch_confirmation
+from app.observability import setup_logging, setup_sentry
 from app.rss import build_global_feed
 from app.wiki import get_person_info
+
+setup_logging()
+setup_sentry("web")
 
 app = FastAPI(title="Mortivox", version="3.3.0")
 

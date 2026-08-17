@@ -28,9 +28,10 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install requests sseclient-py mwparserfromhell psycopg2-binary httpx
+        run: pip install requests sseclient-py mwparserfromhell psycopg2-binary httpx sentry-sdk
 
       - name: Run watcher for 50 minutes
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: timeout 2900 python -m app.watcher || true
