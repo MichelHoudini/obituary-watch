@@ -5,10 +5,12 @@ Checks if any wiki_title has crossed a new watcher milestone
 and emails all watchers of that person.
 """
 
-import os
 import logging
+import os
+
 import requests
-from app.db import get_conn, _exec, _fetchall, USE_POSTGRES
+
+from app.db import USE_POSTGRES, _exec, _fetchall, get_conn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)

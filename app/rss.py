@@ -3,8 +3,10 @@ rss.py - Build Atom/RSS feed from detected deaths.
 """
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from feedgen.feed import FeedGenerator
+
 from app.db import get_deaths
 
 _MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
@@ -47,9 +49,9 @@ def build_global_feed(base_url: str) -> bytes:
         fe.content(f"<p><strong>{row['display_name']}</strong> has died. {death_info}</p><p><a href=\"{row['wiki_url']}\">Wikipedia</a></p>", type="html")
         fe.summary(f"{row['display_name']} has died. {death_info}")
         try:
-            dt = datetime.fromisoformat(row["detected_at"]).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(row["detected_at"]).replace(tzinfo=UTC)
         except Exception:
-            dt = datetime.now(timezone.utc)
+            dt = datetime.now(UTC)
         fe.published(dt)
         fe.updated(dt)
 

@@ -3,27 +3,14 @@ wiki.py — Fetch person info from Wikipedia API.
 Just what we need: name, photo, description, birth date, occupation.
 """
 
-import httpx
 import re
+
+import httpx
 
 HEADERS = {"User-Agent": "ObituaryWatch/3.0 (wikipedia-death-monitor)"}
 
 def wiki_api(lang: str = "en") -> str:
     return f"https://{lang}.wikipedia.org/w/api.php"
-
-
-def title_from_url(url: str) -> str | None:
-    """Extract wiki title from a Wikipedia URL."""
-    url = url.strip()
-    patterns = [
-        r"en\.wikipedia\.org/wiki/([^#?&]+)",
-        r"wikipedia\.org/wiki/([^#?&]+)",
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
 
 
 def get_person_info(wiki_title: str, lang: str = "en") -> dict | None:
@@ -79,7 +66,7 @@ def get_person_info(wiki_title: str, lang: str = "en") -> dict | None:
             "url":         f"https://{lang}.wikipedia.org/wiki/{wiki_title}",
         }
 
-    except Exception as e:
+    except Exception:
         return None
 
 
