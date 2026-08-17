@@ -6,27 +6,35 @@ import html
 import json
 import os
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, title_to_slug, get_list_people
+from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, get_list_people, title_to_slug
 from app.db import (
-    init_db, add_watch, seed_watched, get_all_watched_titles,
-    get_deaths, get_watch_count, get_death_count,
-    get_watch_count_for_title, get_death_for_title, get_watch_counts,
-    get_watcher_health, remove_false_death_detections,
+    add_watch,
+    get_all_watched_titles,
+    get_death_count,
+    get_death_for_title,
+    get_deaths,
+    get_watch_count,
+    get_watch_count_for_title,
+    get_watch_counts,
+    get_watcher_health,
+    init_db,
+    remove_false_death_detections,
+    seed_watched,
 )
 from app.email import send_watch_confirmation
-from app.wiki import get_person_info
 from app.rss import build_global_feed
+from app.wiki import get_person_info
 
 app = FastAPI(title="Mortivox", version="3.3.0")
 
@@ -37,7 +45,7 @@ app = FastAPI(title="Mortivox", version="3.3.0")
 # can read exactly how the endpoint works.
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]  # slowapi's handler type doesn't perfectly match Starlette's stub; correct at runtime
 
 app.add_middleware(
     CORSMiddleware,
@@ -319,8 +327,8 @@ def _watcher_is_stale(health: dict | None) -> bool:
     try:
         heartbeat = datetime.fromisoformat(health["heartbeat_at"])
         if heartbeat.tzinfo is None:
-            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-        age = datetime.now(timezone.utc) - heartbeat
+            heartbeat = heartbeat.replace(tzinfo=UTC)
+        age = datetime.now(UTC) - heartbeat
         return age > timedelta(hours=WATCHER_STALE_HOURS)
     except Exception:
         # Malformed timestamp is treated as stale rather than raising —

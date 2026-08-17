@@ -7,8 +7,7 @@ subscribe through /watch.
 """
 
 from app.catalog import CATALOG
-from app.db import init_db, add_watched
-
+from app.db import add_watched, init_db
 
 if __name__ == "__main__":
     init_db()

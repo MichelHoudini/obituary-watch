@@ -3,10 +3,10 @@ db.py - Database layer using PostgreSQL (Supabase/Render-compatible).
 Falls back to SQLite for local development if DATABASE_URL is not set.
 """
 
-import os
 import logging
-from datetime import datetime, timezone
+import os
 from contextlib import contextmanager
+from datetime import UTC, datetime
 
 log = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ USE_POSTGRES = bool(DATABASE_URL)
 
 
 def utcnow():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @contextmanager
@@ -59,7 +59,7 @@ def _fetchall(cur):
         return []
     if USE_POSTGRES:
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, row)) for row in rows]
+        return [dict(zip(cols, row, strict=True)) for row in rows]
     return [dict(r) for r in rows]
 
 
@@ -69,7 +69,7 @@ def _fetchone(cur):
         return None
     if USE_POSTGRES:
         cols = [d[0] for d in cur.description]
-        return dict(zip(cols, row))
+        return dict(zip(cols, row, strict=True))
     return dict(row)
 
 
@@ -159,7 +159,7 @@ def init_db():
             """)
 
 
-def add_watched(wiki_title: str, display_name: str = None, category: str = None, birth_year: int = None) -> bool:
+def add_watched(wiki_title: str, display_name: str | None = None, category: str | None = None, birth_year: int | None = None) -> bool:
     wiki_title = wiki_title.strip().replace(" ", "_")
     display_name = display_name or wiki_title.replace("_", " ")
     with get_conn() as conn:
@@ -258,18 +258,6 @@ def get_all_watched_titles() -> set[str]:
     return {r["wiki_title"] for r in rows}
 
 
-def get_monitored_people(limit: int = 500) -> list[dict]:
-    with get_conn() as conn:
-        ph = _ph()
-        cur = _exec(conn, f"""
-            SELECT wiki_title, display_name, category, birth_year, created_at
-            FROM monitored_titles
-            ORDER BY display_name ASC
-            LIMIT {ph}
-        """, (limit,))
-        return _fetchall(cur)
-
-
 def get_watch_count() -> int:
     with get_conn() as conn:
         cur = _exec(conn, """
@@ -304,7 +292,7 @@ def get_watch_counts() -> dict:
     return {r["wiki_title"]: r["n"] for r in rows}
 
 
-def record_death(wiki_title: str, display_name: str, death_date: str, edit_url: str = None) -> bool:
+def record_death(wiki_title: str, display_name: str, death_date: str, edit_url: str | None = None) -> bool:
     wiki_url = f"https://en.wikipedia.org/wiki/{wiki_title}"
     with get_conn() as conn:
         if USE_POSTGRES:

@@ -4,9 +4,10 @@ Uses noreply@mortivox.com (domínio verificado no Resend).
 Sender: Mortivox <noreply@mortivox.com>
 """
 
-import os
-import httpx
 import logging
+import os
+
+import httpx
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def send_death_notification(
     wiki_title:   str,
     death_date:   str,
     wiki_url:     str,
-    edit_url:     str = None,
+    edit_url:     str | None = None,
 ) -> bool:
     """Send a death notification email. Returns True if sent successfully."""
 
@@ -29,7 +30,6 @@ def send_death_notification(
         log.warning("RESEND_API_KEY not set — skipping email")
         return False
 
-    first_name = person_name.split()[0]
     edit_link  = f'\n<p style="margin:0 0 12px"><a href="{edit_url}" style="color:#c8b89a">See the Wikipedia edit that detected this →</a></p>' if edit_url else ""
 
     html = f"""<!DOCTYPE html>

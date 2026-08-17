@@ -8,13 +8,20 @@ import json
 import logging
 import re
 import time
+
+import mwparserfromhell
 import requests
 import sseclient
-import mwparserfromhell
 
 from app.db import (
-    get_all_watched_titles, record_death, is_already_dead, get_emails_for,
-    record_watcher_start, record_watcher_heartbeat, record_watcher_event, record_watcher_error,
+    get_all_watched_titles,
+    get_emails_for,
+    is_already_dead,
+    record_death,
+    record_watcher_error,
+    record_watcher_event,
+    record_watcher_heartbeat,
+    record_watcher_start,
 )
 from app.email import send_death_notification as send_death_email
 

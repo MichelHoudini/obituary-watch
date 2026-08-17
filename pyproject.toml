@@ -1,0 +1,42 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+# Deliberately conservative to start: catch real bugs and obvious style
+# issues without forcing a huge reformat of existing code in one PR.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes (unused imports/vars, undefined names -- real bugs)
+    "I",   # isort (import ordering)
+    "B",   # flake8-bugbear (common bug patterns)
+    "UP",  # pyupgrade (modern Python idioms)
+]
+ignore = [
+    "E501",  # line length handled by the formatter, not worth erroring on
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401"]  # test files sometimes import fixtures for their side effects
+
+[tool.mypy]
+python_version = "3.12"
+# Starting permissive on purpose: this codebase has no type coverage yet.
+# Tightening (disallow_untyped_defs, strict_optional, etc.) is a separate,
+# deliberate follow-up once the existing code has annotations -- turning
+# strict mode on today would fail on almost every function and bury real
+# signal under hundreds of pre-existing warnings.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.vulture]
+# 80%+ confidence only: below that, vulture floods with false positives on
+# FastAPI route handlers (only "called" via @app.get/@app.post decorators,
+# which vulture's static analysis can't see) and ORM-style attribute sets.
+min_confidence = 80
+paths = ["app"]
