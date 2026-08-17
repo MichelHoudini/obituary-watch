@@ -32,5 +32,28 @@ jobs:
       - name: Vulture (dead code)
         run: python -m vulture app
 
-      - name: pytest
-        run: python -m pytest -v
+      - name: pytest (unit tests)
+        run: python -m pytest tests --ignore=tests/e2e -v
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Install Playwright browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: pytest (e2e, real browser)
+        run: python -m pytest tests/e2e -v
