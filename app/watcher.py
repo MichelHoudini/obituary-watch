@@ -24,8 +24,10 @@ from app.db import (
     record_watcher_start,
 )
 from app.email import send_death_notification as send_death_email
+from app.observability import setup_logging, setup_sentry
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+setup_logging()
+setup_sentry("watcher")
 log = logging.getLogger(__name__)
 
 STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange"
