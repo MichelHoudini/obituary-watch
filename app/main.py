@@ -6,7 +6,7 @@ import html
 import json
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
@@ -117,6 +117,26 @@ _MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
                 "July", "August", "September", "October", "November", "December"]
 
 
+def _parse_death_date(raw: str | None) -> date | None:
+    """Extract just the date from a {{Death date and age|Y|M|D|...}} value.
+    Shared by format_death_date (for display) and detection_label (to tell
+    a fresh detection apart from an old death Mortivox is just now
+    recording)."""
+    if not raw:
+        return None
+    match = re.search(
+        r"\{\{\s*[Dd]eath date(?: and age)?\s*\|\s*(\d{4})\s*\|\s*(\d{1,2})\s*\|\s*(\d{1,2})",
+        raw,
+    )
+    if not match:
+        return None
+    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
 def format_death_date(raw: str | None) -> str:
     """Turn a raw {{Death date and age|Y|M|D|...}} wikitext value into a
     human-readable date like 'October 1, 2025'. The template's first three
@@ -127,15 +147,36 @@ def format_death_date(raw: str | None) -> str:
     this shape, so nothing is ever hidden -- just formatted when we can."""
     if not raw:
         return "confirmed"
-    match = re.search(
-        r"\{\{\s*[Dd]eath date(?: and age)?\s*\|\s*(\d{4})\s*\|\s*(\d{1,2})\s*\|\s*(\d{1,2})",
-        raw,
-    )
-    if match:
-        year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
-        if 1 <= month <= 12:
-            return f"{_MONTH_NAMES[month]} {day}, {year}"
+    parsed = _parse_death_date(raw)
+    if parsed is not None:
+        return f"{_MONTH_NAMES[parsed.month]} {parsed.day}, {parsed.year}"
     return raw
+
+
+def detection_label(detected_at, death_date_raw: str | None, capitalize: bool = False) -> str:
+    """"Detected {date}" is accurate and is the whole point of this site
+    when the gap between the actual death and Mortivox noticing it is
+    small -- that's live detection working as intended. But someone can be
+    added to the watch list (or simply not get their triggering edit
+    caught live) well after they already died; the watcher only reacts to
+    edits it catches in the stream, it never proactively checks whether a
+    newly-watched title is already dead. When that happens, "detected
+    {today}" on a death from months ago reads as slow or broken to a
+    visitor -- it wasn't detected today, it was just recorded today.
+    Switches to "logged {date}" once the gap passes two weeks."""
+    detected_str = str(detected_at or "")[:10]
+    label = "detected"
+    death_dt = _parse_death_date(death_date_raw)
+    if death_dt is not None and detected_str:
+        try:
+            gap_days = (date.fromisoformat(detected_str) - death_dt).days
+            if gap_days > 14:
+                label = "logged"
+        except ValueError:
+            pass
+    if capitalize:
+        label = label.capitalize()
+    return f"{label} {detected_str}"
 
 
 def analytics_snippet() -> str:
@@ -270,7 +311,7 @@ def death_card(row: dict) -> str:
       <div class="alert-dot" style="width:8px;height:8px;border-radius:50%;background:var(--mv-danger);box-shadow:0 0 8px var(--mv-danger-glow);flex-shrink:0"></div>
       <div class="alert-info">
         <div class="name">{e(row["display_name"])}</div>
-        <div class="when">detected {e(str(row.get("detected_at", ""))[:10])}</div>
+        <div class="when">{e(detection_label(row.get("detected_at"), row.get("death_date")))}</div>
       </div>
       <span class="badge danger">{e(death_date)}</span>
     </a>
@@ -651,7 +692,7 @@ def public_person(slug: str, request: Request):
         death_block = f"""
         <div class="panel" style="display:block;margin:24px 0">
           <div class="card-title">Death detected</div>
-          <div class="card-meta">Detected {e(str(death.get("detected_at", ""))[:10])}. Death date: {e(format_death_date(death.get("death_date")))}</div>
+          <div class="card-meta">{e(detection_label(death.get("detected_at"), death.get("death_date"), capitalize=True))}. Death date: {e(format_death_date(death.get("death_date")))}</div>
           {f'<p style="margin-top:12px"><a class="button secondary" href="{e(death.get("edit_url"))}">view detected edit</a></p>' if death.get("edit_url") else ""}
         </div>
         """

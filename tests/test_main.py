@@ -4,7 +4,7 @@ main public routes via FastAPI's TestClient.
 """
 from fastapi.testclient import TestClient
 
-from app.main import app, format_death_date
+from app.main import app, detection_label, format_death_date
 
 # ── format_death_date ────────────────────────────────────────────────────
 
@@ -54,6 +54,49 @@ def test_invalid_month_falls_back_to_raw():
     upstream on Wikipedia) producing a nonsense formatted date."""
     raw = "{{Death date and age|2026|13|1|1930|5|31}}"
     assert format_death_date(raw) == raw
+
+
+# ── detection_label ──────────────────────────────────────────────────────
+
+def test_detection_label_says_detected_for_a_fresh_death():
+    """The normal, intended case: death and detection close together in
+    time -- live detection working as designed."""
+    label = detection_label("2026-08-17T22:00:00+00:00", "{{Death date and age|2026|8|16|1930|5|31}}")
+    assert label == "detected 2026-08-17"
+
+
+def test_detection_label_says_logged_for_an_old_death():
+    """The exact real-world case this exists for: Jane Goodall died
+    2025-10-01, but this specific record wasn't touched by any Wikipedia
+    edit Mortivox's watcher caught until 2026-08-17 -- calling that
+    'detected' would misleadingly suggest an 11-month-old death just
+    happened."""
+    label = detection_label("2026-08-17T22:00:00+00:00", "{{Death date and age|2025|10|1|1934|4|3|df=y}}")
+    assert label == "logged 2026-08-17"
+
+
+def test_detection_label_boundary_at_fourteen_days():
+    fresh = detection_label("2026-08-15T00:00:00+00:00", "{{Death date and age|2026|8|1|1930|1|1}}")
+    assert fresh == "detected 2026-08-15"
+
+    stale = detection_label("2026-08-16T00:00:00+00:00", "{{Death date and age|2026|8|1|1930|1|1}}")
+    assert stale == "logged 2026-08-16"
+
+
+def test_detection_label_capitalize_option():
+    assert detection_label(
+        "2026-08-17T22:00:00+00:00", "{{Death date and age|2025|10|1|1930|1|1}}", capitalize=True
+    ) == "Logged 2026-08-17"
+
+
+def test_detection_label_handles_missing_death_date():
+    label = detection_label("2026-08-17T22:00:00+00:00", None)
+    assert label == "detected 2026-08-17"
+
+
+def test_detection_label_handles_missing_detected_at():
+    label = detection_label(None, "{{Death date and age|2025|10|1|1930|1|1}}")
+    assert label == "detected "
 
 
 # ── route smoke tests ────────────────────────────────────────────────────
