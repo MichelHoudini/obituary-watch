@@ -1,0 +1,29 @@
+name: ObituaryWatch — Keepalive Ping
+
+on:
+  schedule:
+    # Render's free tier spins down the web service after ~15 minutes of
+    # inactivity, then takes 50+ seconds to wake back up on the next
+    # request. If Googlebot (or a real visitor) hits the site during that
+    # cold-start window, it can see a 5xx error -- which is exactly what
+    # happened: Search Console reported "Erro no servidor (5xx)" for
+    # mortivox.com on 2026-08-19.
+    #
+    # Pinging every 10 minutes keeps the instance warm well within that
+    # 15-minute window, so it never spins down in the first place. This
+    # costs nothing extra: the repo is public, so GitHub Actions minutes
+    # are unlimited, and each ping takes a few seconds.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Ping /status to keep the instance warm
+        run: |
+          curl -sS -o /dev/null -w "status=%{http_code} time=%{time_total}s\n" \
+            --max-time 60 \
+            https://mortivox.com/status
