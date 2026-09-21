@@ -27,6 +27,7 @@ from app.db import (
     get_deaths,
     get_deaths_by_location_qid,
     get_deaths_by_occupation_qid,
+    get_migration_errors,
     get_watch_count,
     get_watch_count_for_title,
     get_watch_counts,
@@ -427,6 +428,7 @@ def _watcher_is_stale(health: dict | None) -> bool:
 @app.get("/status")
 def status(request: Request):
     health = get_watcher_health()
+    migration_errors = get_migration_errors()
     return {
         "watching": get_watch_count(),
         "deaths_detected": get_death_count(),
@@ -435,6 +437,8 @@ def status(request: Request):
         "sitemap": f"{base_url(request)}/sitemap.xml",
         "watcher_health": health,
         "watcher_is_stale": _watcher_is_stale(health),
+        "schema_ok": len(migration_errors) == 0,
+        "schema_errors": migration_errors,
     }
 
 

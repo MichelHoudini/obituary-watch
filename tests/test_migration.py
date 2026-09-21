@@ -417,3 +417,10 @@ def test_mig005_step_failure_isolated_and_named():
     assert any("occupation_qids" in m for m in error_messages), (
         f"Expected step name in error log, got: {error_messages}"
     )
+
+    # get_migration_errors() must expose the failure so /status can report schema_ok=False
+    from app.db import get_migration_errors  # noqa: PLC0415
+    migration_errors = get_migration_errors()
+    assert any("occupation_qids" in e for e in migration_errors), (
+        f"get_migration_errors() should contain the failing step; got: {migration_errors}"
+    )

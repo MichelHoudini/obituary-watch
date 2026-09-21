@@ -14,6 +14,14 @@ log = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 USE_POSTGRES = bool(DATABASE_URL)
 
+# Populated by migrate_schema(); read by get_migration_errors() for /status.
+_migrate_errors: list[str] = []
+
+
+def get_migration_errors() -> list[str]:
+    """Return the list of step names that failed during the last migrate_schema() call."""
+    return list(_migrate_errors)
+
 
 def utcnow():
     return datetime.now(UTC).isoformat()
@@ -682,6 +690,7 @@ def _pg_col_has_unique(conn, table: str, col: str) -> bool:
 
 
 def _migrate_schema_postgres() -> None:
+    global _migrate_errors
     import secrets as _sec
     errors: list[str] = []
 
@@ -808,6 +817,7 @@ def _migrate_schema_postgres() -> None:
         log.error("migrate_schema: %s failed: %r", step, exc)
         errors.append(step)
 
+    _migrate_errors = errors  # persist for /status schema_ok field
     if errors:
         log.warning("migrate_schema: %d step(s) had errors: %s", len(errors), "; ".join(errors))
 

@@ -135,6 +135,27 @@ def test_status_returns_watcher_health_shape():
     assert "deaths_detected" in body
 
 
+def test_status_schema_ok_true_when_no_migration_errors(monkeypatch):
+    """schema_ok=True when migrate_schema() completed without errors."""
+    import app.db as db_module
+    monkeypatch.setattr(db_module, "_migrate_errors", [])
+    r = client.get("/status")
+    body = r.json()
+    assert body["schema_ok"] is True
+    assert body["schema_errors"] == []
+
+
+def test_status_schema_ok_false_when_migration_errors(monkeypatch):
+    """/status shows schema_ok=False and lists the failing step name when
+    migrate_schema() recorded errors — Sentry also captures the ERROR log."""
+    import app.db as db_module
+    monkeypatch.setattr(db_module, "_migrate_errors", ["TYPE deaths.occupation_qids"])
+    r = client.get("/status")
+    body = r.json()
+    assert body["schema_ok"] is False
+    assert "TYPE deaths.occupation_qids" in body["schema_errors"]
+
+
 def test_sitemap_is_xml():
     r = client.get("/sitemap.xml")
     assert r.status_code == 200

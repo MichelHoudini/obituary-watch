@@ -60,7 +60,7 @@ jobs:
         run: python -m vulture app
 
       - name: pytest (unit tests)
-        run: python -m pytest tests --ignore=tests/e2e -v
+        run: python -m pytest tests --ignore=tests/e2e -v -rs
 
   e2e:
     runs-on: ubuntu-latest
