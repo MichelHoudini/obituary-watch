@@ -9,6 +9,8 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import quote
 
+from app.dates import _parse_death_date, _MONTH_NAMES, format_death_date
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
@@ -117,46 +119,6 @@ def js(value) -> str:
 
 def wiki_url(title: str) -> str:
     return f"https://en.wikipedia.org/wiki/{quote(title)}"
-
-
-_MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November", "December"]
-
-
-def _parse_death_date(raw: str | None) -> date | None:
-    """Extract just the date from a {{Death date and age|Y|M|D|...}} value.
-    Shared by format_death_date (for display) and detection_label (to tell
-    a fresh detection apart from an old death Mortivox is just now
-    recording)."""
-    if not raw:
-        return None
-    match = re.search(
-        r"\{\{\s*[Dd]eath date(?: and age)?\s*\|\s*(\d{4})\s*\|\s*(\d{1,2})\s*\|\s*(\d{1,2})",
-        raw,
-    )
-    if not match:
-        return None
-    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
-    try:
-        return date(year, month, day)
-    except ValueError:
-        return None
-
-
-def format_death_date(raw: str | None) -> str:
-    """Turn a raw {{Death date and age|Y|M|D|...}} wikitext value into a
-    human-readable date like 'October 1, 2025'. The template's first three
-    numeric parameters are always the death date (birth date, if present,
-    comes after) -- https://en.wikipedia.org/wiki/Template:Death_date_and_age
-
-    Falls back to returning the raw value unchanged if it doesn't match
-    this shape, so nothing is ever hidden -- just formatted when we can."""
-    if not raw:
-        return "confirmed"
-    parsed = _parse_death_date(raw)
-    if parsed is not None:
-        return f"{_MONTH_NAMES[parsed.month]} {parsed.day}, {parsed.year}"
-    return raw
 
 
 def detection_label(detected_at, death_date_raw: str | None, capitalize: bool = False) -> str:

@@ -239,6 +239,19 @@ def add_watch(wiki_title: str, email: str) -> bool:
             return cur.rowcount > 0
 
 
+def remove_watch(wiki_title: str, email: str) -> bool:
+    """Remove a subscription. Returns True if a row was deleted."""
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    email = email.strip().lower()
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn,
+            f"DELETE FROM watches WHERE wiki_title={ph} AND email={ph}",
+            (wiki_title, email),
+        )
+        return cur.rowcount > 0
+
+
 def get_emails_for(wiki_title: str) -> list[str]:
     with get_conn() as conn:
         ph = _ph()

@@ -103,12 +103,6 @@ def test_adv003_xss_in_wiki_title_escaped_in_page():
 
 # ── ADV-004: XSS no email HTML ───────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Bug conhecido: email.py usa f-string sem html.escape(person_name). "
-           "XSS em person_name aparece verbatim no HTML do email. "
-           "Fix: envolver person_name em html.escape() no template.",
-)
 def test_adv004_xss_person_name_escaped_in_email():
     """XSS em person_name deve ser escapado no template HTML do email."""
     from unittest.mock import MagicMock, patch

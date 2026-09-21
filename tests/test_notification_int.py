@@ -97,11 +97,6 @@ def test_int002_record_death_unique_constraint():
 
 # ── INT-003: assinante cancelado (xfail — cancelamento não implementado) ──────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="cancelamento de assinatura não implementado: sem endpoint /cancel "
-           "nem remove_watch(); ver EML-004 e contrato",
-)
 def test_int003_cancelled_subscriber_does_not_receive():
     """Assinante que cancelou antes do envio não deve receber notificação.
     Requer endpoint de cancelamento e função remove_watch()."""

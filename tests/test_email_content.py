@@ -74,13 +74,6 @@ def test_eml001_subject_contains_person_name(capture_resend):
 
 # ── EML-002: corpo HTML sem wikitext bruto ───────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Bug conhecido: email.py insere death_date diretamente no f-string "
-           "sem formatar. O campo death_date salvo no banco pode conter wikitext "
-           "bruto (ex: '{{Death date and age|...}}') que aparece verbatim no email. "
-           "Fix: passar format_death_date(death_date) antes de montar o HTML.",
-)
 def test_eml002_html_body_has_no_raw_wikitext_template(capture_resend):
     """O corpo HTML nunca deve expor o template wikitext bruto para o leitor.
     A data deve vir já formatada ('March 15, 2026'), não como '{{Death date...}}'."""
@@ -133,12 +126,6 @@ def test_eml002_html_body_contains_wikipedia_link(capture_resend):
     assert wiki_url in html_body
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Bug conhecido: email.py insere death_date (placeholder HTML comentado) "
-           "diretamente no f-string. O placeholder '<!-- {{Death date...}} -->' "
-           "aparece verbatim no corpo do email.",
-)
 def test_eml002_html_body_no_placeholder_visible(capture_resend):
     """O placeholder exato que causou o bug de Clint Eastwood nunca deve aparecer
     no corpo do email como texto visível."""
