@@ -45,7 +45,7 @@ gh auth login --scopes repo,workflow
 | PR 5 | feat/ingestao-global | docs/auditoria-filtros | 1941e6b | PRONTO — 228 pass, 15 novos testes ING |
 | PR 6 | fix/tokens-e-email-headers | feat/ingestao-global | 03806dc | PRONTO — 235 pass, 7 xfail→pass |
 | PR 7 | fix/schema-e-consistencia | fix/tokens-e-email-headers | 2563d91 | PRONTO — 250 pass, CONF/ING/ADV novos testes |
-| PR 8 | fix/perf-ci-backfill | fix/schema-e-consistencia | (pending) | EM CURSO — PERF-004 CI, seed 300k, backfill v2, run_window |
+| PR 8 | fix/perf-ci-backfill | fix/schema-e-consistencia | d876b97 | PRONTO — 250 pass local; 11 skip esperado no CI |
 
 Para criar os PRs após autenticar o gh CLI:
 ```powershell
