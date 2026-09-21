@@ -44,7 +44,7 @@ gh auth login --scopes repo,workflow
 | Audit | docs/auditoria-filtros | feat/paginas-nicho | 87cdf98 | PRONTO — docs only |
 | PR 5 | feat/ingestao-global | docs/auditoria-filtros | 1941e6b | PRONTO — 228 pass, 15 novos testes ING |
 | PR 6 | fix/tokens-e-email-headers | feat/ingestao-global | 03806dc | PRONTO — 235 pass, 7 xfail→pass |
-| PR 7 | fix/schema-e-consistencia | fix/tokens-e-email-headers | (pending) | EM CURSO — schema TEXT[], GIN, ingestor seguro |
+| PR 7 | fix/schema-e-consistencia | fix/tokens-e-email-headers | 2563d91 | PRONTO — 250 pass, CONF/ING/ADV novos testes |
 
 Para criar os PRs após autenticar o gh CLI:
 ```powershell
