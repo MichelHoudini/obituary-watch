@@ -9,8 +9,6 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import quote
 
-from app.dates import _parse_death_date, _MONTH_NAMES, format_death_date
-
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
@@ -20,6 +18,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, get_list_people, title_to_slug
+from app.dates import _parse_death_date, format_death_date
 from app.db import (
     add_watch,
     get_all_watched_titles,

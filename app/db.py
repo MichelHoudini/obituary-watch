@@ -315,7 +315,7 @@ def add_watch_with_token(
                 ON CONFLICT (wiki_title, email) DO UPDATE SET cancel_token = EXCLUDED.cancel_token
             """, (wiki_title, email, now, filter_occupation_qid, filter_location_qid, token))
         else:
-            _exec(conn, f"""
+            _exec(conn, """
                 INSERT OR REPLACE INTO watches
                     (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid, cancel_token)
                 VALUES (?,?,?,?,?,?)
@@ -602,7 +602,7 @@ def upsert_global_death(
             """, (wiki_qid, wiki_title, display_name, death_date, now, wiki_url))
             return _fetchone(cur) is not None
         else:
-            cur = _exec(conn, f"""
+            cur = _exec(conn, """
                 INSERT OR IGNORE INTO deaths
                     (wiki_qid, wiki_title, display_name, death_date, detected_at, wiki_url)
                 VALUES (?,?,?,?,?,?)

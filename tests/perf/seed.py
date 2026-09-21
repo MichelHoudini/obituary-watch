@@ -145,7 +145,7 @@ def _seed_postgres(db_url: str, n_deaths: int, n_watches: int, drop: bool, expla
     conn.close()
 
 
-def _run_explain(cur: "psycopg2.cursor") -> None:
+def _run_explain(cur: object) -> None:
     queries = {
         "gin_occupation_match": (
             "EXPLAIN (ANALYZE, BUFFERS) "

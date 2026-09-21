@@ -419,6 +419,7 @@ def run_window(
 
 if __name__ == "__main__":
     import sys
+
     from app.db import init_db, migrate_schema
     from app.observability import setup_logging, setup_sentry
 
