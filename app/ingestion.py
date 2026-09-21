@@ -274,7 +274,7 @@ def _run_candidates(
     )
 
     # ── Pass 2: Wikipedia confirmation (runs even in dry_run to count confirmed) ─
-    pending_inserts: list[tuple[dict, str]] = []
+    pending_inserts: list[tuple[dict, str | None]] = []
     for cand in will_call_wiki:
         try:
             confirmed, death_date = confirm_death(cand)

@@ -104,15 +104,15 @@ def enrich_death(wiki_title: str) -> dict:
     Also persists to DB if the death row exists.
     Arrays are always lists (never None); empty when data absent.
     """
+    occupation_qids: list[str] = []
+    location_qids: list[str] = []
+
     if _OFFLINE_MODE and wiki_title in _FIXTURE_ENTITIES:
         data = _FIXTURE_ENTITIES[wiki_title]
         occupation_qids = list(data.get("occupation_qids", []))
         location_qids = list(data.get("location_qids", []))
         _try_update_db(wiki_title, occupation_qids, location_qids)
         return {"occupation_qids": occupation_qids, "location_qids": location_qids}
-
-    occupation_qids: list[str] = []
-    location_qids: list[str] = []
 
     if not _OFFLINE_MODE:
         raw_occs, raw_locs = _fetch_person_claims(wiki_title)
@@ -152,7 +152,7 @@ def _fetch_person_claims(wiki_title: str) -> tuple[list[str], list[str]]:
             "format": "json",
         }, timeout=10)
         pages = r.json().get("query", {}).get("pages", {})
-        page = next(iter(pages.values()), {})
+        page: dict = next(iter(pages.values()), {})
         qid = page.get("pageprops", {}).get("wikibase_item")
         if not qid:
             return [], []

@@ -582,7 +582,7 @@ def upsert_global_death(
     wiki_qid: str,
     wiki_title: str,
     display_name: str,
-    death_date: str,
+    death_date: str | None,
     wiki_url: str,
 ) -> bool:
     """Insert a globally-ingested confirmed death.  Returns True if new row was
