@@ -210,3 +210,56 @@ def test_ing015_summary_has_all_keys():
     for key in ("checked", "confirmed", "inserted", "skipped_existing", "errors"):
         assert key in summary, f"Summary missing key: {key}"
         assert isinstance(summary[key], int)
+
+
+# ── ING-016: ingestor skips watched titles (regression) ──────────────────────
+
+def test_ing016_ingestor_skips_watched_title():
+    """Watched title must be skipped by the ingestor so the watcher sends exactly
+    one email when it later detects the death.
+
+    Regression guard: if the ingestor inserts a death for a watched title first,
+    the watcher's record_death() returns False (already exists) and the email
+    is never sent.  The fix is is_already_watched() at the top of run()."""
+    from app.db import add_watch_with_token, get_death_for_title, init_db
+
+    init_db()
+    # Mark the confirmed fixture title as watched.
+    add_watch_with_token("Test_Person_Confirmed", "watcher@example.com")
+
+    summary = run(days_back=3, dry_run=False)
+
+    # Ingestor must not have inserted the watched title.
+    assert summary["skipped_existing"] >= 1
+    row = get_death_for_title("Test_Person_Confirmed")
+    assert row is None, (
+        "Ingestor inserted a watched title; "
+        "is_already_watched() check may be missing from run()"
+    )
+
+
+# ── ING-017: safety brake aborts when >500 confirmed ─────────────────────────
+
+def test_ing017_safety_brake():
+    """run() must abort without writing when confirmed count > MAX_INSERTS_PER_RUN."""
+    import app.ingestion as m
+
+    # Patch MAX_INSERTS_PER_RUN to -1 so any confirmed death triggers the brake.
+    original = m.MAX_INSERTS_PER_RUN
+    m.MAX_INSERTS_PER_RUN = -1
+    try:
+        summary = run(days_back=3, dry_run=False)
+    finally:
+        m.MAX_INSERTS_PER_RUN = original
+
+    assert summary["aborted"] is True
+    assert summary["inserted"] == 0
+
+
+# ── ING-018: dry_run includes aborted key ────────────────────────────────────
+
+def test_ing018_summary_has_aborted_key():
+    """run() must return an 'aborted' key."""
+    summary = run(days_back=3, dry_run=True)
+    assert "aborted" in summary
+    assert summary["aborted"] is False

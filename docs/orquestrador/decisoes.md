@@ -21,6 +21,17 @@ Atualizado: 2026-09-20
 | 2026-09-20 | Página pública só exibe morte com data confirmada (sem placeholder) | Evitar expor wikitext bruto | padrão, Michel pode trocar |
 | 2026-09-20 | Página de nicho só indexável com >= 5 mortes reais | Evitar conteúdo raso em escala | padrão, Michel pode trocar |
 
+## Decisões de implementação
+
+| Data | Decisão | Motivo | Tipo |
+|---|---|---|---|
+| 2026-09-21 | `is_confirmed_death()` em `app/dates.py` é a única definição canônica de morte confirmada | Havia 3 implementações divergentes (nicho, email, filtro); unificação elimina inconsistência silenciosa | obrigatório |
+| 2026-09-21 | Colunas `occupation_qids`/`location_qids` são `TEXT[]` com índice GIN no Postgres; `TEXT DEFAULT '[]'` JSON no SQLite | Operador `@>` e GIN exigem `TEXT[]`; SQLite não suporta esse tipo | obrigatório |
+| 2026-09-21 | `migrate_schema()` chamada no startup do app | Colunas adicionadas via `ALTER TABLE … ADD COLUMN` não estavam sendo criadas em instâncias já existentes | obrigatório |
+| 2026-09-21 | Ingestor global desligado por padrão (`INGESTOR_ENABLED`); disparo manual sem essa variável | Evita ingestão acidental em escala antes de validação manual com dry_run | obrigatório |
+| 2026-09-21 | Freio de segurança no ingestor: aborta sem gravar se >500 inserções por execução | Spike de dados no Wikidata (e.g. correção em lote) não polui o banco sem revisão humana | obrigatório |
+| 2026-09-21 | Ingestor pula títulos já monitorados (`is_already_watched`) | Se ingestor inserir antes do watcher, `record_death` retorna False e o email de watcher nunca é enviado | obrigatório |
+
 ## Decisões de teste
 
 | Data | Decisão | Motivo | Tipo |

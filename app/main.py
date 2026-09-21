@@ -98,6 +98,8 @@ MIN_NICHO_DEATHS: int = int(os.environ.get("MIN_NICHO_DEATHS", "5"))
 @app.on_event("startup")
 def startup():
     init_db()
+    from app.db import migrate_schema  # noqa: PLC0415
+    migrate_schema()
     seed_catalog_titles()
     removed = remove_false_death_detections()
     if removed:
@@ -873,15 +875,8 @@ def subscribe_filter_page(request: Request):
 
 def _nicho_death_rows(deaths: list[dict]) -> list[dict]:
     """Return only deaths with a confirmed (non-placeholder) date."""
-    import re as _re
-    _comment = _re.compile(r"<!--.*?-->", _re.DOTALL)
-    confirmed = []
-    for row in deaths:
-        raw = row.get("death_date") or ""
-        real = _comment.sub("", raw).strip()
-        if real and _re.search(r"\d{4}", real):
-            confirmed.append(row)
-    return confirmed
+    from app.dates import is_confirmed_death  # noqa: PLC0415
+    return [row for row in deaths if is_confirmed_death(row.get("death_date"))]
 
 
 def _nicho_layout(

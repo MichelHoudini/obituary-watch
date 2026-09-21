@@ -197,13 +197,37 @@ def should_notify_filter_watch(detected_at: str, now: datetime | None = None) ->
 
 
 def get_notifiable_emails_for_death(wiki_title: str, death: dict) -> set[str]:
-    """Combine person-watch and filter-watch emails for a death, deduplicated."""
-    from app.db import get_emails_for, get_filter_watches  # noqa: PLC0415
+    """Combine person-watch and filter-watch emails for a death, deduplicated.
+
+    Guards against unconfirmed death_date values so that a death ingested
+    before wikitext confirmation (e.g. from a partial Wikidata entry) never
+    triggers filter-watch notifications.  Person-specific watches are not
+    guarded here — they are sent by the watcher, which already validates
+    the date via extract_death_date() before recording.
+    """
+    from app.dates import is_confirmed_death  # noqa: PLC0415
+    from app.db import (  # noqa: PLC0415
+        USE_POSTGRES,
+        get_emails_for,
+        get_filter_emails_for_death,
+        get_filter_watches,
+    )
 
     emails: set[str] = set()
     for email in get_emails_for(wiki_title):
         emails.add(email)
-    for watch in get_filter_watches():
-        if match_watch(watch, death):
-            emails.add(watch["email"])
+
+    if not is_confirmed_death(death.get("death_date")):
+        return emails  # don't send filter notifications for unconfirmed deaths
+
+    occ_qids = death.get("occupation_qids") or []
+    loc_qids  = death.get("location_qids")  or []
+
+    if USE_POSTGRES:
+        for email in get_filter_emails_for_death(occ_qids, loc_qids):
+            emails.add(email)
+    else:
+        for watch in get_filter_watches():
+            if match_watch(watch, death):
+                emails.add(watch["email"])
     return emails

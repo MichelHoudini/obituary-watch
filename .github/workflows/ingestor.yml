@@ -24,6 +24,8 @@ on:
 
 jobs:
   ingest:
+    # Schedule requires INGESTOR_ENABLED=true; manual dispatch always runs.
+    if: github.event_name == 'workflow_dispatch' || vars.INGESTOR_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 

@@ -145,30 +145,52 @@ def test_perf003_warm_ttfb_under_500ms():
     assert elapsed < 0.5, f"TTFB quente: {elapsed:.3f}s (limite: 0.5s)"
 
 
-# ── PERF-004: EXPLAIN ANALYZE com GIN index (xfail — requer Postgres) ────────
+# ── PERF-004: EXPLAIN ANALYZE com GIN index (requer Postgres via DATABASE_URL) ─
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GIN index não existe: colunas occupation_qids/location_qids ausentes "
-           "em deaths; requer Postgres com app/filters.py implementado",
-)
 def test_perf004_gin_index_used_for_array_containment():
     """EXPLAIN ANALYZE deve mostrar uso de índice GIN para consultas de array
-    do tipo WHERE occupation_qids @> ARRAY['Q177220']."""
+    do tipo WHERE occupation_qids @> ARRAY['Q177220'].
+
+    Semeia 10.000 linhas (metade com Q177220 em occupation_qids) para que o
+    planner prefira o índice GIN em vez de sequential scan."""
     import os
     if not os.environ.get("DATABASE_URL"):
         pytest.skip("DATABASE_URL não configurado; pulando teste de GIN index")
 
     import psycopg2
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn.autocommit = False
     cur = conn.cursor()
+
+    # Seed 10 000 rows; half have Q177220 in occupation_qids.
+    cur.execute("DELETE FROM deaths WHERE wiki_title LIKE 'perf004_seed_%'")
+    rows_a = [
+        (f"perf004_seed_a_{i}", f"Seed A {i}", "{Q177220,Q36180}", "{Q142}")
+        for i in range(5000)
+    ]
+    rows_b = [
+        (f"perf004_seed_b_{i}", f"Seed B {i}", "{Q36180}", "{Q30}")
+        for i in range(5000)
+    ]
+    cur.executemany(
+        "INSERT INTO deaths (wiki_title, display_name, occupation_qids, location_qids) "
+        "VALUES (%s, %s, %s::TEXT[], %s::TEXT[]) "
+        "ON CONFLICT (wiki_title) DO NOTHING",
+        rows_a + rows_b,
+    )
+    conn.commit()
+
     cur.execute("""
         EXPLAIN ANALYZE
         SELECT wiki_title FROM deaths
-        WHERE occupation_qids @> ARRAY['Q177220']
+        WHERE occupation_qids @> ARRAY['Q177220']::TEXT[]
         LIMIT 10
     """)
     plan = "\n".join(r[0] for r in cur.fetchall())
+
+    # Cleanup
+    cur.execute("DELETE FROM deaths WHERE wiki_title LIKE 'perf004_seed_%'")
+    conn.commit()
     conn.close()
 
     assert "Bitmap Index Scan" in plan or "Index Scan" in plan, (

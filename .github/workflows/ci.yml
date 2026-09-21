@@ -10,6 +10,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: mortivox
+          POSTGRES_PASSWORD: mortivox
+          POSTGRES_DB: mortivox_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://mortivox:mortivox@localhost:5432/mortivox_test
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,6 +40,15 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+
+      - name: Initialize DB and run migrations
+        run: |
+          python - <<'EOF'
+          from app.db import init_db, migrate_schema
+          init_db()
+          migrate_schema()
+          print("DB ready")
+          EOF
 
       - name: Ruff (lint)
         run: python -m ruff check app tests

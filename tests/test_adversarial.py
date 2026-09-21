@@ -289,3 +289,64 @@ def test_adv013_absurdly_long_email_no_exception():
         add_watch("Clint_Eastwood", long_email)
     except Exception as e:
         pytest.fail(f"Exceção com email de 10k chars: {e}")
+
+
+# ── ADV-014: cancel_token backfill in migrate_schema() ───────────────────────
+
+def test_adv014_cancel_token_backfill():
+    """migrate_schema() must assign a unique cancel_token to every watch row
+    that previously had NULL.  Calling it twice must be idempotent."""
+    import secrets
+    from app.db import _exec, _fetchall, _ph, get_conn, init_db, migrate_schema
+
+    init_db()
+
+    # Insert two rows with NULL cancel_token via raw SQL to bypass add_watch_with_token.
+    with get_conn() as conn:
+        ph = _ph()
+        for title in ("Backfill_A", "Backfill_B"):
+            _exec(
+                conn,
+                f"INSERT OR IGNORE INTO watches (wiki_title, email) VALUES ({ph}, {ph})",
+                (title, f"{title.lower()}@example.com"),
+            )
+
+    # Null out any token that may have been auto-generated.
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(
+            conn,
+            f"UPDATE watches SET cancel_token = NULL "
+            f"WHERE wiki_title IN ({ph}, {ph})",
+            ("Backfill_A", "Backfill_B"),
+        )
+
+    # Run migration; backfill step should populate tokens.
+    migrate_schema()
+
+    with get_conn() as conn:
+        cur = _exec(
+            conn,
+            "SELECT cancel_token FROM watches "
+            "WHERE wiki_title IN ('Backfill_A', 'Backfill_B')",
+        )
+        rows = _fetchall(cur)
+
+    tokens = [r["cancel_token"] for r in rows]
+    assert all(t is not None for t in tokens), "Some tokens still NULL after migrate_schema()"
+    assert len(set(tokens)) == len(tokens), "Duplicate tokens detected after backfill"
+    assert all(len(t) >= 32 for t in tokens), "Token too short"
+
+    # Second call must be idempotent (tokens must not change).
+    migrate_schema()
+
+    with get_conn() as conn:
+        cur = _exec(
+            conn,
+            "SELECT cancel_token FROM watches "
+            "WHERE wiki_title IN ('Backfill_A', 'Backfill_B')",
+        )
+        rows2 = _fetchall(cur)
+
+    tokens2 = [r["cancel_token"] for r in rows2]
+    assert sorted(tokens) == sorted(tokens2), "migrate_schema() changed existing tokens on second run"

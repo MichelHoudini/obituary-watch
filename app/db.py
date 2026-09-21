@@ -78,7 +78,12 @@ def _ph():
     return "%s" if USE_POSTGRES else "?"
 
 
-def _encode_qids(qids: list[str]) -> str:
+def _encode_qids(qids: list[str]):
+    """Encode a QID list for storage.
+    Postgres: return the list directly — psycopg2 adapts it to TEXT[].
+    SQLite: return a JSON string."""
+    if USE_POSTGRES:
+        return qids
     return json.dumps(qids)
 
 
@@ -128,8 +133,8 @@ def init_db():
                     detected_at      TEXT NOT NULL,
                     wiki_url         TEXT NOT NULL,
                     edit_url         TEXT,
-                    occupation_qids  TEXT DEFAULT '[]',
-                    location_qids    TEXT DEFAULT '[]',
+                    occupation_qids  TEXT[] DEFAULT '{}',
+                    location_qids    TEXT[] DEFAULT '{}',
                     wiki_qid         TEXT
                 )
             """)
@@ -463,6 +468,21 @@ def is_already_dead(wiki_title: str) -> bool:
     return get_death_for_title(wiki_title) is not None
 
 
+def is_already_watched(wiki_title: str) -> bool:
+    """Return True if wiki_title appears in monitored_titles or watches.
+    Used by the global ingestor to skip people already handled by the watcher."""
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"""
+            SELECT 1 FROM (
+                SELECT wiki_title FROM monitored_titles WHERE wiki_title={ph}
+                UNION
+                SELECT wiki_title FROM watches WHERE wiki_title={ph} AND wiki_title != ''
+            ) x LIMIT 1
+        """, (wiki_title, wiki_title))
+        return _fetchone(cur) is not None
+
+
 def get_death_for_title(wiki_title: str) -> dict | None:
     with get_conn() as conn:
         ph = _ph()
@@ -488,29 +508,54 @@ def get_death_count() -> int:
 
 
 def get_deaths_by_occupation_qid(qid: str) -> list[dict]:
-    """Return deaths whose occupation_qids JSON array contains qid."""
+    """Return deaths whose occupation_qids array contains qid.
+    Postgres: uses @> containment operator with GIN index.
+    SQLite: Python-side filter (no GIN support)."""
     with get_conn() as conn:
+        if USE_POSTGRES:
+            cur = _exec(conn,
+                "SELECT * FROM deaths WHERE occupation_qids @> ARRAY[%s]::TEXT[] "
+                "ORDER BY detected_at DESC",
+                (qid,))
+            return _fetchall(cur)
         cur = _exec(conn, "SELECT * FROM deaths ORDER BY detected_at DESC")
         rows = _fetchall(cur)
-    result = []
-    for row in rows:
-        qids = _decode_qids(row.get("occupation_qids"))
-        if qid in qids:
-            result.append(row)
-    return result
+    return [r for r in rows if qid in _decode_qids(r.get("occupation_qids"))]
 
 
 def get_deaths_by_location_qid(qid: str) -> list[dict]:
-    """Return deaths whose location_qids JSON array contains qid."""
+    """Return deaths whose location_qids array contains qid.
+    Postgres: uses @> containment operator with GIN index.
+    SQLite: Python-side filter (no GIN support)."""
     with get_conn() as conn:
+        if USE_POSTGRES:
+            cur = _exec(conn,
+                "SELECT * FROM deaths WHERE location_qids @> ARRAY[%s]::TEXT[] "
+                "ORDER BY detected_at DESC",
+                (qid,))
+            return _fetchall(cur)
         cur = _exec(conn, "SELECT * FROM deaths ORDER BY detected_at DESC")
         rows = _fetchall(cur)
-    result = []
-    for row in rows:
-        qids = _decode_qids(row.get("location_qids"))
-        if qid in qids:
-            result.append(row)
-    return result
+    return [r for r in rows if qid in _decode_qids(r.get("location_qids"))]
+
+
+def get_filter_emails_for_death(occupation_qids: list[str], location_qids: list[str]) -> list[str]:
+    """Return emails of filter-watches whose filters match the given arrays.
+    Postgres: SQL @> containment (uses GIN index on watches filters indirectly).
+    SQLite: Python-side match via match_watch loop (called from filters.py)."""
+    if not USE_POSTGRES:
+        return []  # SQLite caller falls back to Python loop in filters.py
+    with get_conn() as conn:
+        cur = _exec(conn, """
+            SELECT email FROM watches
+            WHERE (filter_occupation_qid IS NOT NULL OR filter_location_qid IS NOT NULL)
+              AND (filter_occupation_qid IS NULL
+                   OR %s::TEXT[] @> ARRAY[filter_occupation_qid]::TEXT[])
+              AND (filter_location_qid IS NULL
+                   OR %s::TEXT[] @> ARRAY[filter_location_qid]::TEXT[])
+        """, (occupation_qids, location_qids))
+        rows = _fetchall(cur)
+    return [r["email"] for r in rows]
 
 
 def update_death_enrichment(wiki_title: str, occupation_qids: list, location_qids: list) -> None:
@@ -577,10 +622,11 @@ def get_death_with_enrichment(wiki_title: str) -> dict | None:
 
 
 def migrate_schema() -> None:
-    """Add new columns to existing databases that pre-date this schema version.
-    Safe to call on every startup: ALTER TABLE ... ADD COLUMN is a no-op if the
-    column already exists (SQLite) or raises a benign duplicate-column error
-    (Postgres) that we swallow."""
+    """Additive, idempotent schema migration.
+    Safe to call on every startup.  Swallows duplicate-column errors."""
+    import secrets
+
+    # ── Step 1: ADD COLUMN — both Postgres and SQLite ────────────────────────
     columns = [
         ("watches", "filter_occupation_qid", "TEXT"),
         ("watches", "filter_location_qid",   "TEXT"),
@@ -595,6 +641,54 @@ def migrate_schema() -> None:
                 _exec(conn, f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
             except Exception:
                 pass  # column already exists — ignore
+
+    # ── Step 2: Postgres-only — convert TEXT to TEXT[], add indexes ───────────
+    if USE_POSTGRES:
+        with get_conn() as conn:
+            # Convert JSON-string columns to native TEXT[] if still TEXT type
+            for col in ("occupation_qids", "location_qids"):
+                try:
+                    _exec(conn, f"""
+                        ALTER TABLE deaths
+                        ALTER COLUMN {col}
+                        TYPE TEXT[] USING {col}::jsonb::text[]
+                    """)
+                except Exception:
+                    pass  # already TEXT[] — ignore
+            # Set native array defaults
+            try:
+                _exec(conn, "ALTER TABLE deaths ALTER COLUMN occupation_qids SET DEFAULT '{}'")
+                _exec(conn, "ALTER TABLE deaths ALTER COLUMN location_qids SET DEFAULT '{}'")
+            except Exception:
+                pass
+            # GIN indexes for array containment
+            _exec(conn, """
+                CREATE INDEX IF NOT EXISTS idx_deaths_occupation_qids
+                ON deaths USING GIN (occupation_qids)
+            """)
+            _exec(conn, """
+                CREATE INDEX IF NOT EXISTS idx_deaths_location_qids
+                ON deaths USING GIN (location_qids)
+            """)
+            # Unique index on wiki_qid (partial — ignores NULLs)
+            _exec(conn, """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_deaths_wiki_qid
+                ON deaths (wiki_qid)
+                WHERE wiki_qid IS NOT NULL
+            """)
+
+    # ── Step 3: Backfill cancel_token for existing watches with NULL token ────
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, "SELECT id FROM watches WHERE cancel_token IS NULL")
+        rows = _fetchall(cur)
+    for row in rows:
+        token = secrets.token_urlsafe(32)
+        with get_conn() as conn:
+            ph = _ph()
+            _exec(conn,
+                  f"UPDATE watches SET cancel_token={ph} WHERE id={ph} AND cancel_token IS NULL",
+                  (token, row["id"]))
 
 
 # ── Watcher healthcheck ──────────────────────────────────────────────────────

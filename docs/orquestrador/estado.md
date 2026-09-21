@@ -44,6 +44,7 @@ gh auth login --scopes repo,workflow
 | Audit | docs/auditoria-filtros | feat/paginas-nicho | 87cdf98 | PRONTO — docs only |
 | PR 5 | feat/ingestao-global | docs/auditoria-filtros | 1941e6b | PRONTO — 228 pass, 15 novos testes ING |
 | PR 6 | fix/tokens-e-email-headers | feat/ingestao-global | 03806dc | PRONTO — 235 pass, 7 xfail→pass |
+| PR 7 | fix/schema-e-consistencia | fix/tokens-e-email-headers | (pending) | EM CURSO — schema TEXT[], GIN, ingestor seguro |
 
 Para criar os PRs após autenticar o gh CLI:
 ```powershell
@@ -55,6 +56,7 @@ gh pr create --draft --base feat/filtros-ui --head feat/paginas-nicho --title "f
 gh pr create --draft --base feat/paginas-nicho --head docs/auditoria-filtros --title "docs: auditoria de filtros — 5 questoes a-e, somente leitura"
 gh pr create --draft --base docs/auditoria-filtros --head feat/ingestao-global --title "feat: global death ingestor via Wikidata SPARQL + Wikipedia confirmation"
 gh pr create --draft --base feat/ingestao-global --head fix/tokens-e-email-headers --title "fix: ADV-006/007/008 cancel tokens, EML-003-006 plain-text/headers"
+gh pr create --draft --base fix/tokens-e-email-headers --head fix/schema-e-consistencia --title "fix: schema TEXT[], GIN index, is_confirmed_death, safe ingestor, Postgres CI"
 ```
 
 ## Pendências humanas (Michel)
