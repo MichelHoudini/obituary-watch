@@ -21,8 +21,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def isolated_db(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    from app.db import init_db
+    from app.db import USE_POSTGRES, init_db
     init_db()
+    if USE_POSTGRES:
+        # In CI all tests share one Postgres instance; truncate for isolation.
+        from app.db import _exec, get_conn
+        with get_conn() as conn:
+            for tbl in ("watches", "deaths", "monitored_titles", "watcher_health"):
+                _exec(conn, f"TRUNCATE {tbl} RESTART IDENTITY CASCADE")
     yield
 
 

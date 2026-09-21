@@ -177,17 +177,19 @@ def test_perf004_gin_index_used_for_array_containment():
 
     # Seed 1 000 rows; half have Q177220 in occupation_qids.
     cur.execute("DELETE FROM deaths WHERE wiki_title LIKE 'perf004_seed_%'")
+    _now = "2024-01-01T00:00:00+00:00"
+    _url = "https://en.wikipedia.org/wiki/perf004_seed"
     rows_a = [
-        (f"perf004_seed_a_{i}", f"Seed A {i}", "{Q177220,Q36180}", "{Q142}")
+        (f"perf004_seed_a_{i}", f"Seed A {i}", _now, _url, "{Q177220,Q36180}", "{Q142}")
         for i in range(500)
     ]
     rows_b = [
-        (f"perf004_seed_b_{i}", f"Seed B {i}", "{Q36180}", "{Q30}")
+        (f"perf004_seed_b_{i}", f"Seed B {i}", _now, _url, "{Q36180}", "{Q30}")
         for i in range(500)
     ]
     cur.executemany(
-        "INSERT INTO deaths (wiki_title, display_name, occupation_qids, location_qids) "
-        "VALUES (%s, %s, %s::TEXT[], %s::TEXT[]) "
+        "INSERT INTO deaths (wiki_title, display_name, detected_at, wiki_url, occupation_qids, location_qids) "
+        "VALUES (%s, %s, %s, %s, %s::TEXT[], %s::TEXT[]) "
         "ON CONFLICT (wiki_title) DO NOTHING",
         rows_a + rows_b,
     )

@@ -258,7 +258,7 @@ def add_watch(
     filter_occupation_qid: str | None = None,
     filter_location_qid: str | None = None,
 ) -> bool:
-    wiki_title = wiki_title.strip().replace(" ", "_")
+    wiki_title = wiki_title.replace("\x00", "").strip().replace(" ", "_")
     email = email.strip().lower()
     if wiki_title:
         add_watched(wiki_title, wiki_title.replace("_", " "), "User-monitored page", None)
@@ -707,6 +707,9 @@ def _migrate_schema_postgres() -> None:
             with get_conn() as conn:
                 udt = _pg_col_udt(conn, "deaths", col)
                 if udt == "text":
+                    # Drop the TEXT default before type conversion; Postgres can't
+                    # cast the string literal '[]' to TEXT[] during ALTER TYPE.
+                    _exec(conn, f"ALTER TABLE deaths ALTER COLUMN {col} DROP DEFAULT")
                     _exec(conn, f"""
                         ALTER TABLE deaths ALTER COLUMN {col}
                         TYPE TEXT[]
