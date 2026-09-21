@@ -427,6 +427,32 @@ def get_death_count() -> int:
     return row["n"] if row else 0
 
 
+def get_deaths_by_occupation_qid(qid: str) -> list[dict]:
+    """Return deaths whose occupation_qids JSON array contains qid."""
+    with get_conn() as conn:
+        cur = _exec(conn, "SELECT * FROM deaths ORDER BY detected_at DESC")
+        rows = _fetchall(cur)
+    result = []
+    for row in rows:
+        qids = _decode_qids(row.get("occupation_qids"))
+        if qid in qids:
+            result.append(row)
+    return result
+
+
+def get_deaths_by_location_qid(qid: str) -> list[dict]:
+    """Return deaths whose location_qids JSON array contains qid."""
+    with get_conn() as conn:
+        cur = _exec(conn, "SELECT * FROM deaths ORDER BY detected_at DESC")
+        rows = _fetchall(cur)
+    result = []
+    for row in rows:
+        qids = _decode_qids(row.get("location_qids"))
+        if qid in qids:
+            result.append(row)
+    return result
+
+
 def update_death_enrichment(wiki_title: str, occupation_qids: list, location_qids: list) -> None:
     """Persist Wikidata ancestor arrays to an existing deaths row.
     No-op if wiki_title is not in the deaths table."""

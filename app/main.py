@@ -26,6 +26,8 @@ from app.db import (
     get_death_count,
     get_death_for_title,
     get_deaths,
+    get_deaths_by_location_qid,
+    get_deaths_by_occupation_qid,
     get_watch_count,
     get_watch_count_for_title,
     get_watch_counts,
@@ -87,6 +89,10 @@ GOOGLE_SITE_VERIFICATION = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip(
 # How stale the watcher's last heartbeat can be before /status flags it.
 # GitHub Actions runs the watcher hourly, so 2h30 gives room for one missed run.
 WATCHER_STALE_HOURS = 2.5
+
+# Minimum confirmed deaths required for a nicho page to be indexable.
+# Below this threshold the page renders but carries noindex,follow.
+MIN_NICHO_DEATHS: int = int(os.environ.get("MIN_NICHO_DEATHS", "5"))
 
 
 @app.on_event("startup")
@@ -439,6 +445,24 @@ def sitemap(request: Request):
     site = base_url(request)
     paths = ["/", "/people", "/deaths", "/lists/most-monitored", "/lists/oldest-living", "/lists/actors", "/lists/musicians"]
     paths += [f"/person/{p['slug']}" for p in CATALOG]
+
+    # Add indexable nicho pages (>= MIN_NICHO_DEATHS confirmed deaths)
+    all_deaths = get_deaths(10_000)
+    from app.db import _decode_qids  # noqa: PLC0415
+    occ_counts: dict[str, int] = {}
+    loc_counts: dict[str, int] = {}
+    for row in all_deaths:
+        for qid in _decode_qids(row.get("occupation_qids")):
+            occ_counts[qid] = occ_counts.get(qid, 0) + 1
+        for qid in _decode_qids(row.get("location_qids")):
+            loc_counts[qid] = loc_counts.get(qid, 0) + 1
+    for qid, cnt in occ_counts.items():
+        if cnt >= MIN_NICHO_DEATHS:
+            paths.append(f"/occupation/{qid}")
+    for qid, cnt in loc_counts.items():
+        if cnt >= MIN_NICHO_DEATHS:
+            paths.append(f"/location/{qid}")
+
     urls = "\n".join(
         f"  <url><loc>{e(site + path)}</loc><changefreq>daily</changefreq><priority>{'1.0' if path == '/' else '0.7'}</priority></url>"
         for path in paths
@@ -845,6 +869,151 @@ def subscribe_filter_page(request: Request):
         body,
         "/subscribe/filter",
     )
+
+
+def _nicho_death_rows(deaths: list[dict]) -> list[dict]:
+    """Return only deaths with a confirmed (non-placeholder) date."""
+    import re as _re
+    _comment = _re.compile(r"<!--.*?-->", _re.DOTALL)
+    confirmed = []
+    for row in deaths:
+        raw = row.get("death_date") or ""
+        real = _comment.sub("", raw).strip()
+        if real and _re.search(r"\d{4}", real):
+            confirmed.append(row)
+    return confirmed
+
+
+def _nicho_layout(
+    request: Request,
+    title: str,
+    description: str,
+    body_html: str,
+    canonical_path: str,
+    indexable: bool,
+) -> HTMLResponse:
+    noindex_tag = (
+        '<meta name="robots" content="noindex,follow">' if not indexable else ""
+    )
+    site = base_url(request)
+    canonical = f"{site}{canonical_path}"
+    image_url = f"{site}/skull.png?v=3"
+    page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{e(title)}</title>
+  <meta name="description" content="{e(description)}">
+  <link rel="canonical" href="{e(canonical)}">
+  {noindex_tag}
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Mortivox">
+  <meta property="og:title" content="{e(title)}">
+  <meta property="og:description" content="{e(description)}">
+  <meta property="og:url" content="{e(canonical)}">
+  <meta property="og:image" content="{e(image_url)}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{e(title)}">
+  <meta name="twitter:description" content="{e(description)}">
+  <meta name="twitter:image" content="{e(image_url)}">
+  {f'<meta name="google-site-verification" content="{e(GOOGLE_SITE_VERIFICATION)}">' if GOOGLE_SITE_VERIFICATION else ""}
+  <style>{CSS}</style>
+  {analytics_snippet()}
+  {tracking_script()}
+</head>
+<body>{body_html}</body>
+</html>"""
+    return HTMLResponse(content=page)
+
+
+@app.get("/occupation/{qid}", response_class=HTMLResponse)
+def occupation_page(qid: str, request: Request):
+    if not _QID_RE.match(qid):
+        raise HTTPException(400, "invalid QID format")
+    all_deaths = get_deaths_by_occupation_qid(qid)
+    confirmed  = _nicho_death_rows(all_deaths)
+    indexable  = len(confirmed) >= MIN_NICHO_DEATHS
+    # Fetch label from Wikidata (best-effort; fall back to QID)
+    label = _fetch_wikidata_label(qid)
+    display = label or qid
+    page_title = f"{display} deaths — Mortivox"
+    page_desc  = f"Mortivox-detected deaths for the occupation {display} (Wikidata {qid})."
+
+    rows_html = "".join(_nicho_death_item(r) for r in confirmed) or (
+        '<p style="color:var(--mv-text-tertiary);font-size:14px">No confirmed deaths detected for this occupation yet.</p>'
+    )
+    body = f"""
+    <main class="page"><div class="container">
+      {nav()}
+      <h1 class="title">{e(display)} deaths</h1>
+      <p class="lede">{e(page_desc)}</p>
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px">{rows_html}</div>
+      <p style="margin-top:32px;font-size:12px;color:var(--mv-text-quaternary)">
+        Wikidata: <a href="https://www.wikidata.org/wiki/{e(qid)}" rel="noopener" style="color:var(--mv-text-tertiary)">{e(qid)}</a>
+        &middot; <a href="/subscribe/filter?occ={e(qid)}" style="color:var(--mv-text-tertiary)">subscribe to this occupation</a>
+      </p>
+    </div></main>{footer()}"""
+    return _nicho_layout(request, page_title, page_desc, body, f"/occupation/{qid}", indexable)
+
+
+@app.get("/location/{qid}", response_class=HTMLResponse)
+def location_page(qid: str, request: Request):
+    if not _QID_RE.match(qid):
+        raise HTTPException(400, "invalid QID format")
+    all_deaths = get_deaths_by_location_qid(qid)
+    confirmed  = _nicho_death_rows(all_deaths)
+    indexable  = len(confirmed) >= MIN_NICHO_DEATHS
+    label = _fetch_wikidata_label(qid)
+    display = label or qid
+    page_title = f"Deaths in {display} — Mortivox"
+    page_desc  = f"Mortivox-detected deaths in or near {display} (Wikidata {qid})."
+
+    rows_html = "".join(_nicho_death_item(r) for r in confirmed) or (
+        '<p style="color:var(--mv-text-tertiary);font-size:14px">No confirmed deaths detected for this location yet.</p>'
+    )
+    body = f"""
+    <main class="page"><div class="container">
+      {nav()}
+      <h1 class="title">Deaths in {e(display)}</h1>
+      <p class="lede">{e(page_desc)}</p>
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px">{rows_html}</div>
+      <p style="margin-top:32px;font-size:12px;color:var(--mv-text-quaternary)">
+        Wikidata: <a href="https://www.wikidata.org/wiki/{e(qid)}" rel="noopener" style="color:var(--mv-text-tertiary)">{e(qid)}</a>
+        &middot; <a href="/subscribe/filter?loc={e(qid)}" style="color:var(--mv-text-tertiary)">subscribe to this location</a>
+      </p>
+    </div></main>{footer()}"""
+    return _nicho_layout(request, page_title, page_desc, body, f"/location/{qid}", indexable)
+
+
+def _nicho_death_item(row: dict) -> str:
+    slug = title_to_slug(row["wiki_title"])
+    death_date = format_death_date(row.get("death_date"))
+    wiki_link  = f"https://en.wikipedia.org/wiki/{row['wiki_title']}"
+    return f"""
+    <div class="panel" style="display:flex;align-items:center;gap:16px;justify-content:space-between">
+      <div>
+        <a href="/person/{e(slug)}" style="font-size:15px;font-weight:500;color:var(--mv-text-primary)">{e(row["display_name"])}</a>
+        <div style="font-size:12px;color:var(--mv-text-quaternary);margin-top:2px">{e(death_date)}</div>
+      </div>
+      <a href="{e(wiki_link)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--mv-text-tertiary);white-space:nowrap">Wikipedia →</a>
+    </div>"""
+
+
+def _fetch_wikidata_label(qid: str) -> str | None:
+    """Fetch English label for a Wikidata QID. Returns None on failure."""
+    try:
+        import httpx  # noqa: PLC0415
+        r = httpx.get(
+            "https://www.wikidata.org/w/api.php",
+            params={"action": "wbgetentities", "ids": qid, "props": "labels",
+                    "languages": "en", "format": "json"},
+            timeout=5,
+        )
+        entity = r.json().get("entities", {}).get(qid, {})
+        return entity.get("labels", {}).get("en", {}).get("value")
+    except Exception:
+        return None
 
 
 @app.get("/person/{slug}", response_class=HTMLResponse)
