@@ -31,7 +31,7 @@ gh auth login --scopes repo,workflow
 | 3. Sistema (e2e, email, adversarial, perf) | qa/f3-sistema | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f3-sistema) | ENTREGUE | 126 pass, 36 xfail, 56% cov; bugs EML/ADV documentados via xfail |
 | 4. Portão técnico de SEO | qa/f4-seo | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f4-seo) | ENTREGUE | 45 pass, 5 skip, 1 xfail; SEO-020 xfail (google-site-verification ausente no HTML) |
 | 5. Search Console e indexação | qa/f5-search-console | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f5-search-console) | ENTREGUE | 173 pass, 12 skip, 36 xfail; GOOGLE_SITE_VERIFICATION env var; search-console.md |
-| 6. Verificação independente e relatório | qa/f6-relatorio | — | PENDENTE | — |
+| 6. Verificação independente e relatório | qa/f6-relatorio | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f6-relatorio) | ENTREGUE | relatorio-final.md gerado; 0 testes vazios; 3 execuções sem flakiness |
 
 ## Pendências humanas (Michel)
 
