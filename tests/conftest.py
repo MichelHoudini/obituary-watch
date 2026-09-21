@@ -23,3 +23,19 @@ def isolated_db(tmp_path, monkeypatch):
     from app.db import init_db
     init_db()
     yield
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Reset slowapi in-memory rate limit counters before each test.
+
+    Without this, the 5/minute bucket on POST /watch is shared across
+    the entire test session — adversarial tests that call /watch would
+    exhaust it before test_main.py's rate-limit test runs.
+    """
+    try:
+        from app.main import limiter
+        limiter.reset()
+    except Exception:
+        pass
+    yield
