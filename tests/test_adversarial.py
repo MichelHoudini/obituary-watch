@@ -297,6 +297,7 @@ def test_adv014_cancel_token_backfill():
     """migrate_schema() must assign a unique cancel_token to every watch row
     that previously had NULL.  Calling it twice must be idempotent."""
     import secrets
+
     from app.db import _exec, _fetchall, _ph, get_conn, init_db, migrate_schema
 
     init_db()

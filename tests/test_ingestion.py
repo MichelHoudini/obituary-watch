@@ -13,7 +13,6 @@ import pytest
 import app.ingestion as ingestion_module
 from app.ingestion import confirm_death, query_wikidata_deaths, run
 
-
 # ── ING-001: offline fixture returns expected candidates ─────────────────────
 
 def test_ing001_fixture_returns_candidates():

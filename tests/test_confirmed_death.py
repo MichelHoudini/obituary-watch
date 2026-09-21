@@ -7,7 +7,6 @@ definition used by nicho pages, watcher email path, and filter notification path
 
 import pytest
 
-
 # ── CONF-001 to CONF-005: is_confirmed_death() unit tests ────────────────────
 
 def test_conf001_valid_death_date_template():

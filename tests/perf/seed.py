@@ -184,6 +184,7 @@ def _run_explain(cur: object) -> None:
 def _seed_sqlite(n_deaths: int, n_watches: int) -> None:
     """Fallback: SQLite seed (no TEXT[] arrays, limited perf value)."""
     import sqlite3
+
     from app.db import init_db
     init_db()
     conn = sqlite3.connect("obituary_watch.db")

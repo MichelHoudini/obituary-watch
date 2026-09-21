@@ -12,7 +12,6 @@ from app.filters import (
     traverse_hierarchy,
 )
 
-
 # ── UNI-030: hierarquia P131/P279 sempre termina ─────────────────────────────
 
 def test_uni030_hierarchy_terminates():
