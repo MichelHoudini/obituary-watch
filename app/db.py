@@ -712,14 +712,23 @@ def _migrate_schema_postgres() -> None:
                     # Drop the TEXT default before type conversion; Postgres can't
                     # cast the string literal '[]' to TEXT[] during ALTER TYPE.
                     _exec(conn, f"ALTER TABLE deaths ALTER COLUMN {col} DROP DEFAULT")
+                    # Normalize stored values to Postgres array literal format so
+                    # the simple ::TEXT[] cast works (Postgres forbids subqueries
+                    # in ALTER TABLE ... USING expressions).
+                    # '[]' / NULL → '{}'  |  '["Q1","Q2"]' → '{Q1,Q2}'  |  already-'{…}' → unchanged
+                    _exec(conn, f"""
+                        UPDATE deaths SET {col} = CASE
+                            WHEN {col} IS NULL OR trim({col}) IN ('', '[]', '{{}}')
+                                THEN '{{}}'
+                            WHEN {col} LIKE '[%%'
+                                THEN '{{' || replace(replace(trim({col}, '[]'), '"', ''), ' ', '') || '}}'
+                            ELSE {col}
+                        END
+                    """)
                     _exec(conn, f"""
                         ALTER TABLE deaths ALTER COLUMN {col}
                         TYPE TEXT[]
-                        USING CASE
-                            WHEN {col} IS NULL OR trim({col}) IN ('', '[]')
-                                THEN ARRAY[]::TEXT[]
-                            ELSE ARRAY(SELECT json_array_elements_text({col}::json))::TEXT[]
-                        END
+                        USING {col}::TEXT[]
                     """)
                     log.info("migrate_schema: deaths.%s TEXT → TEXT[] done", col)
         except Exception as exc:
@@ -743,19 +752,31 @@ def _migrate_schema_postgres() -> None:
             log.warning("migrate_schema: DEFAULT/NOT NULL %s non-critical: %r", col, exc)
 
     # ── Step 4: GIN indexes and unique index on wiki_qid ─────────────────────
-    index_stmts = [
-        "CREATE INDEX IF NOT EXISTS idx_deaths_occupation_qids ON deaths USING GIN (occupation_qids)",
-        "CREATE INDEX IF NOT EXISTS idx_deaths_location_qids   ON deaths USING GIN (location_qids)",
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_deaths_wiki_qid ON deaths (wiki_qid) WHERE wiki_qid IS NOT NULL",
-    ]
-    for stmt in index_stmts:
+    # GIN indexes require TEXT[] columns; skip creation if TYPE conversion failed.
+    for idx_name, col, stmt in [
+        ("idx_deaths_occupation_qids", "occupation_qids",
+         "CREATE INDEX IF NOT EXISTS idx_deaths_occupation_qids ON deaths USING GIN (occupation_qids)"),
+        ("idx_deaths_location_qids", "location_qids",
+         "CREATE INDEX IF NOT EXISTS idx_deaths_location_qids   ON deaths USING GIN (location_qids)"),
+    ]:
         try:
             with get_conn() as conn:
-                _exec(conn, stmt)
+                if _pg_col_udt(conn, "deaths", col) == "_text":
+                    _exec(conn, stmt)
         except Exception as exc:
-            step = f"INDEX: {stmt.split('EXISTS')[1].split('ON')[0].strip()}"
+            step = f"INDEX: {idx_name}"
             log.error("migrate_schema: %s failed: %r", step, exc)
             errors.append(step)
+
+    try:
+        with get_conn() as conn:
+            _exec(conn,
+                  "CREATE UNIQUE INDEX IF NOT EXISTS idx_deaths_wiki_qid"
+                  " ON deaths (wiki_qid) WHERE wiki_qid IS NOT NULL")
+    except Exception as exc:
+        step = "INDEX: idx_deaths_wiki_qid"
+        log.error("migrate_schema: %s failed: %r", step, exc)
+        errors.append(step)
 
     # ── Step 5: Unique index on cancel_token (legacy schema only) ────────────
     try:
