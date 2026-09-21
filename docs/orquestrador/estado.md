@@ -37,10 +37,13 @@ gh auth login --scopes repo,workflow
 
 | PR | Branch | Base | Commit | Status |
 |---|---|---|---|---|
-| PR 1 | fix/email-bugs | qa/f6-relatorio | a9178d8 | **PRONTO — aguarda `gh auth login` para criar PR no GitHub** |
+| PR 1 | fix/email-bugs | qa/f6-relatorio | a9178d8 | **PRONTO — aguarda `gh auth login`** |
 | PR 2 | feat/filtros-enriquecimento | fix/email-bugs | 3c11279 | **PRONTO — aguarda `gh auth login`** |
 | PR 3 | feat/filtros-ui | feat/filtros-enriquecimento | 3fcbe31 | **PRONTO — aguarda `gh auth login`** |
 | PR 4 | feat/paginas-nicho | feat/filtros-ui | a6063c9 | **PRONTO — aguarda `gh auth login`** |
+| Audit | docs/auditoria-filtros | feat/paginas-nicho | 87cdf98 | PRONTO — docs only |
+| PR 5 | feat/ingestao-global | docs/auditoria-filtros | 1941e6b | PRONTO — 228 pass, 15 novos testes ING |
+| PR 6 | fix/tokens-e-email-headers | feat/ingestao-global | 03806dc | PRONTO — 235 pass, 7 xfail→pass |
 
 Para criar os PRs após autenticar o gh CLI:
 ```powershell
@@ -49,6 +52,9 @@ gh pr create --draft --base qa/f6-relatorio --head fix/email-bugs --title "fix: 
 gh pr create --draft --base fix/email-bugs --head feat/filtros-enriquecimento --title "feat: filters enrichment — schema migration, filters.py, wikidata fixtures"
 gh pr create --draft --base feat/filtros-enriquecimento --head feat/filtros-ui --title "feat: filter subscription UI, /subscribe/filter, /api/filters endpoints"
 gh pr create --draft --base feat/filtros-ui --head feat/paginas-nicho --title "feat: nicho pages /occupation/{qid} and /location/{qid}, sitemap update"
+gh pr create --draft --base feat/paginas-nicho --head docs/auditoria-filtros --title "docs: auditoria de filtros — 5 questoes a-e, somente leitura"
+gh pr create --draft --base docs/auditoria-filtros --head feat/ingestao-global --title "feat: global death ingestor via Wikidata SPARQL + Wikipedia confirmation"
+gh pr create --draft --base feat/ingestao-global --head fix/tokens-e-email-headers --title "fix: ADV-006/007/008 cancel tokens, EML-003-006 plain-text/headers"
 ```
 
 ## Pendências humanas (Michel)
