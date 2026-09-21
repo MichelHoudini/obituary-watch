@@ -293,28 +293,92 @@ def global_rss_feed(request: Request):
     return Response(content=feed, media_type="application/atom+xml")
 
 
+_QID_RE = re.compile(r"^Q[0-9]+$")
+
+
 class WatchRequest(BaseModel):
-    wiki_title: str
+    wiki_title: str = ""
     email: str
+    filter_occupation_qid: str | None = None
+    filter_location_qid:   str | None = None
 
 
 @app.post("/watch")
 @limiter.limit("5/minute")
 def add_watch_endpoint(req: WatchRequest, request: Request):
-    if not req.wiki_title or not req.email:
-        raise HTTPException(400, "wiki_title and email are required")
     title = req.wiki_title.strip().replace(" ", "_")
     email = req.email.strip().lower()
-    is_new = add_watch(title, email)
-    info = get_person_info(title)
-    person_name = (info or {}).get("name") or title.replace("_", " ")
-    send_watch_confirmation(email, person_name, wiki_url(title))
+    occ   = req.filter_occupation_qid or None
+    loc   = req.filter_location_qid or None
+
+    if not email:
+        raise HTTPException(400, "email is required")
+    if not title and not occ and not loc:
+        raise HTTPException(400, "wiki_title or at least one filter QID is required")
+    for qid in filter(None, [occ, loc]):
+        if not _QID_RE.match(qid):
+            raise HTTPException(400, f"invalid QID format: {qid!r}")
+
+    is_new = add_watch(title, email, filter_occupation_qid=occ, filter_location_qid=loc)
+    if title:
+        info = get_person_info(title)
+        person_name = (info or {}).get("name") or title.replace("_", " ")
+        send_watch_confirmation(email, person_name, wiki_url(title))
     return {
         "added": is_new,
         "wiki_title": title,
+        "filter_occupation_qid": occ,
+        "filter_location_qid": loc,
         "message": "Added" if is_new else "Already watching",
-        "person_url": f"{base_url(request)}/person/{title_to_slug(title)}",
+        "person_url": f"{base_url(request)}/person/{title_to_slug(title)}" if title else None,
     }
+
+
+@app.get("/api/filters/occupations")
+def filter_occupations(q: str = ""):
+    """Search Wikidata for occupation entities matching q."""
+    if not q:
+        raise HTTPException(400, "q is required")
+    return _wikidata_entity_search(q, language="en")
+
+
+@app.get("/api/filters/locations")
+def filter_locations(q: str = ""):
+    """Search Wikidata for location entities matching q."""
+    if not q:
+        raise HTTPException(400, "q is required")
+    return _wikidata_entity_search(q, language="en")
+
+
+def _wikidata_entity_search(query: str, language: str = "en") -> dict:
+    import httpx  # noqa: PLC0415
+    try:
+        r = httpx.get(
+            "https://www.wikidata.org/w/api.php",
+            params={
+                "action": "wbsearchentities",
+                "search": query,
+                "language": language,
+                "type": "item",
+                "limit": 20,
+                "format": "json",
+                "origin": "*",
+            },
+            timeout=8,
+        )
+        raw = r.json().get("search", [])
+        results = [
+            {
+                "qid":         item.get("id", ""),
+                "label":       item.get("label", ""),
+                "description": item.get("description", ""),
+            }
+            for item in raw
+            if _QID_RE.match(item.get("id", ""))
+        ]
+        return {"results": results}
+    except Exception:
+        return {"results": []}
 
 
 @app.get("/api/person")
@@ -626,6 +690,161 @@ def deaths_page(request: Request):
     </div></main>{footer()}
     """
     return layout(request, "Detected deaths — Mortivox", "A public log of death-related Wikipedia changes detected by Mortivox.", body, "/deaths")
+
+
+@app.get("/subscribe/filter", response_class=HTMLResponse)
+def subscribe_filter_page(request: Request):
+    body = f"""
+    <main class="page"><div class="container">
+      {nav()}
+      <h1 class="title" style="margin-bottom:12px">Subscribe by filter</h1>
+      <p class="lede">Get notified when Mortivox detects a death matching your chosen occupation or location.</p>
+
+      <div style="max-width:520px;margin:0 auto">
+        <div id="filterForm" style="display:flex;flex-direction:column;gap:20px">
+
+          <div>
+            <label style="font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mv-text-quaternary);display:block;margin-bottom:8px">Occupation</label>
+            <div class="input-group" style="border-radius:var(--mv-radius-md)">
+              <input type="text" id="occInput" placeholder="e.g. musician, actor, politician…" autocomplete="off">
+            </div>
+            <div id="occResults" style="display:none;margin-top:4px;border:1px solid var(--mv-border);border-radius:var(--mv-radius-md);background:var(--mv-surface);overflow:hidden"></div>
+            <input type="hidden" id="occQid" value="">
+            <div id="occSelected" style="display:none;margin-top:6px;font-size:12px;color:var(--mv-text-secondary)"></div>
+          </div>
+
+          <div>
+            <label style="font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mv-text-quaternary);display:block;margin-bottom:8px">Location</label>
+            <div class="input-group" style="border-radius:var(--mv-radius-md)">
+              <input type="text" id="locInput" placeholder="e.g. United States, Brazil, New York…" autocomplete="off">
+            </div>
+            <div id="locResults" style="display:none;margin-top:4px;border:1px solid var(--mv-border);border-radius:var(--mv-radius-md);background:var(--mv-surface);overflow:hidden"></div>
+            <input type="hidden" id="locQid" value="">
+            <div id="locSelected" style="display:none;margin-top:6px;font-size:12px;color:var(--mv-text-secondary)"></div>
+          </div>
+
+          <div>
+            <label style="font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mv-text-quaternary);display:block;margin-bottom:8px">Your email</label>
+            <div class="input-group" style="border-radius:var(--mv-radius-md)">
+              <input type="email" id="emailInput" placeholder="your@email.com" autocomplete="email">
+            </div>
+          </div>
+
+          <button class="button" id="subscribeBtn" onclick="submitFilterWatch()">Subscribe →</button>
+          <p class="hint" id="filterHint">You need at least one filter (occupation or location).</p>
+        </div>
+
+        <div class="success-msg" id="filterSuccess">
+          <div class="success-icon">✓</div>
+          <span id="filterSuccessText">Subscription added</span>
+          <button class="back-btn" onclick="document.getElementById('filterSuccess').classList.remove('visible');document.getElementById('filterForm').style.display='flex'">Subscribe again</button>
+        </div>
+      </div>
+    </div></main>{footer()}
+
+    <script>
+      function debounce(fn, ms) {{
+        let t; return function(...a) {{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }};
+      }}
+
+      async function searchWikidata(q) {{
+        if (!q || q.length < 2) return [];
+        try {{
+          const url = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${{encodeURIComponent(q)}}&language=en&type=item&limit=8&format=json&origin=*`;
+          const r = await fetch(url);
+          if (!r.ok) return [];
+          return (await r.json()).search || [];
+        }} catch {{ return []; }}
+      }}
+
+      function makeResultList(results, onSelect) {{
+        const ul = document.createElement('div');
+        results.forEach(item => {{
+          const li = document.createElement('div');
+          li.style.cssText = 'padding:10px 16px;cursor:pointer;border-bottom:1px solid var(--mv-border);font-size:14px';
+          li.onmouseenter = () => li.style.background = 'var(--mv-surface-raised)';
+          li.onmouseleave = () => li.style.background = '';
+          li.innerHTML = `<span style="color:var(--mv-text-primary)">${{item.label || item.id}}</span>
+            ${{item.description ? `<span style="color:var(--mv-text-tertiary);font-size:12px"> — ${{item.description}}</span>` : ''}}`;
+          li.onclick = () => onSelect(item);
+          ul.appendChild(li);
+        }});
+        return ul;
+      }}
+
+      function setupAutocomplete(inputId, resultsId, qidId, selectedId) {{
+        const input = document.getElementById(inputId);
+        const resultsDiv = document.getElementById(resultsId);
+        const qidField = document.getElementById(qidId);
+        const selectedDiv = document.getElementById(selectedId);
+
+        const search = debounce(async (q) => {{
+          const items = await searchWikidata(q);
+          resultsDiv.innerHTML = '';
+          if (!items.length) {{ resultsDiv.style.display='none'; return; }}
+          resultsDiv.appendChild(makeResultList(items, item => {{
+            qidField.value = item.id;
+            input.value = item.label || item.id;
+            selectedDiv.textContent = `Selected: ${{item.label || item.id}} (${{item.id}})`;
+            selectedDiv.style.display = 'block';
+            resultsDiv.style.display = 'none';
+          }}));
+          resultsDiv.style.display = 'block';
+        }}, 300);
+
+        input.addEventListener('input', () => {{
+          qidField.value = '';
+          selectedDiv.style.display = 'none';
+          search(input.value.trim());
+        }});
+        document.addEventListener('click', e => {{
+          if (!resultsDiv.contains(e.target) && e.target !== input) resultsDiv.style.display = 'none';
+        }});
+      }}
+
+      setupAutocomplete('occInput', 'occResults', 'occQid', 'occSelected');
+      setupAutocomplete('locInput', 'locResults', 'locQid', 'locSelected');
+
+      async function submitFilterWatch() {{
+        const occ = document.getElementById('occQid').value;
+        const loc = document.getElementById('locQid').value;
+        const email = document.getElementById('emailInput').value.trim();
+        if (!occ && !loc) {{
+          document.getElementById('filterHint').style.color = 'var(--mv-danger)';
+          setTimeout(() => document.getElementById('filterHint').style.color = '', 2000);
+          return;
+        }}
+        if (!email || !email.includes('@')) {{
+          const el = document.getElementById('emailInput');
+          el.style.outline = '1px solid var(--mv-danger)';
+          setTimeout(() => el.style.outline = '', 1500);
+          return;
+        }}
+        const btn = document.getElementById('subscribeBtn');
+        btn.textContent = '...'; btn.disabled = true;
+        try {{
+          const body = {{ wiki_title: '', email }};
+          if (occ) body.filter_occupation_qid = occ;
+          if (loc) body.filter_location_qid = loc;
+          const r = await fetch('/watch', {{ method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(body) }});
+          const d = await r.json();
+          document.getElementById('filterForm').style.display = 'none';
+          const msg = document.getElementById('filterSuccess');
+          msg.classList.add('visible');
+          document.getElementById('filterSuccessText').textContent = d.added ? 'Subscription added!' : 'Already subscribed.';
+        }} catch {{
+          btn.textContent = 'error — try again'; btn.disabled = false;
+        }}
+      }}
+    </script>
+    """
+    return layout(
+        request,
+        "Subscribe by filter — Mortivox",
+        "Get notified when Mortivox detects a death matching your chosen occupation or location filter.",
+        body,
+        "/subscribe/filter",
+    )
 
 
 @app.get("/person/{slug}", response_class=HTMLResponse)
