@@ -173,13 +173,8 @@ def test_adv005_email_header_injection_via_resend_api():
         assert len(to_field) == 1, f"Injeção resultou em {len(to_field)} destinatários: {to_field}"
 
 
-# ── ADV-006 a ADV-008: tokens de cancelamento (xfail) ────────────────────────
+# ── ADV-006 a ADV-008: tokens de cancelamento ────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Tokens de cancelamento não implementados: sem endpoint /cancel "
-           "nem geração de token; ver contrato",
-)
 def test_adv006_cancel_token_is_random_and_long():
     """Token de cancelamento deve ter >= 32 chars e ser diferente a cada assinatura."""
     from app.db import add_watch_with_token
@@ -190,10 +185,6 @@ def test_adv006_cancel_token_is_random_and_long():
     assert t1 != t2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Tokens de cancelamento não implementados",
-)
 def test_adv007_cancel_token_single_use():
     """Token de cancelamento é de uso único: após uso, rejeitar reuso."""
     from app.db import add_watch_with_token, cancel_watch_by_token
@@ -202,14 +193,9 @@ def test_adv007_cancel_token_single_use():
     assert cancel_watch_by_token(token) is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Tokens de cancelamento não implementados",
-)
 def test_adv008_cancel_token_constant_time_comparison():
     """Comparação de tokens em tempo constante (hmac.compare_digest) para
     prevenir timing oracle."""
-    # Se a função existir, ela deve usar hmac.compare_digest
     import inspect
 
     from app.db import cancel_watch_by_token

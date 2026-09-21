@@ -146,13 +146,8 @@ def test_eml002_html_body_no_placeholder_visible(capture_resend):
     assert "YYYY|MM|DD" not in html_body
 
 
-# ── EML-003: versão texto ausente (xfail) ────────────────────────────────────
+# ── EML-003: versão texto ────────────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Versão texto do email não implementada: send_death_notification "
-           "envia apenas HTML, sem fallback text/plain",
-)
 def test_eml003_plain_text_version_present(capture_resend):
     """Emails de notificação devem ter versão texto para clientes sem HTML
     e para melhores métricas de entrega."""
@@ -170,13 +165,8 @@ def test_eml003_plain_text_version_present(capture_resend):
     assert "text" in payload, "Campo 'text' ausente no payload do Resend (versão texto não enviada)"
 
 
-# ── EML-004: link de cancelamento ausente (xfail) ────────────────────────────
+# ── EML-004: link de cancelamento ────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Link de cancelamento não implementado: email.py não inclui "
-           "URL de unsubscribe; ver EML-004 e contrato",
-)
 def test_eml004_cancel_link_present_in_html(capture_resend):
     """O corpo HTML deve conter link de cancelamento de assinatura."""
     from app.email import send_death_notification
@@ -199,13 +189,8 @@ def test_eml004_cancel_link_present_in_html(capture_resend):
     assert has_cancel, "Nenhum link de cancelamento encontrado no HTML do email"
 
 
-# ── EML-005: List-Unsubscribe header ausente (xfail) ─────────────────────────
+# ── EML-005: List-Unsubscribe header ─────────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="List-Unsubscribe header não implementado: payload do Resend "
-           "não inclui headers de unsubscribe; obrigatório para Gmail/Yahoo 2024",
-)
 def test_eml005_list_unsubscribe_header_present(capture_resend):
     """O email deve incluir List-Unsubscribe conforme exigido pelo Gmail/Yahoo (2024)."""
     from app.email import send_death_notification
@@ -223,13 +208,8 @@ def test_eml005_list_unsubscribe_header_present(capture_resend):
     assert "List-Unsubscribe" in headers or "list-unsubscribe" in {k.lower() for k in headers}
 
 
-# ── EML-006: List-Unsubscribe-Post header ausente (xfail) ────────────────────
+# ── EML-006: List-Unsubscribe-Post header ────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="List-Unsubscribe-Post header não implementado: necessário para "
-           "one-click unsubscribe (RFC 8058, Gmail 2024)",
-)
 def test_eml006_list_unsubscribe_post_header_present(capture_resend):
     """O email deve incluir List-Unsubscribe-Post para one-click unsubscribe."""
     from app.email import send_death_notification

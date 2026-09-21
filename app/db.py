@@ -105,6 +105,7 @@ def init_db():
                     created_at            TEXT NOT NULL,
                     filter_occupation_qid TEXT,
                     filter_location_qid   TEXT,
+                    cancel_token          TEXT UNIQUE,
                     UNIQUE(wiki_title, email)
                 )
             """)
@@ -152,6 +153,7 @@ def init_db():
                     created_at            TEXT NOT NULL,
                     filter_occupation_qid TEXT,
                     filter_location_qid   TEXT,
+                    cancel_token          TEXT UNIQUE,
                     UNIQUE(wiki_title, email)
                 );
                 CREATE TABLE IF NOT EXISTS monitored_titles (
@@ -283,6 +285,62 @@ def remove_watch(wiki_title: str, email: str) -> bool:
             (wiki_title, email),
         )
         return cur.rowcount > 0
+
+
+def add_watch_with_token(
+    wiki_title: str,
+    email: str,
+    filter_occupation_qid: str | None = None,
+    filter_location_qid: str | None = None,
+) -> str:
+    """Add a watch subscription and return a unique cancellation token (>= 32 chars).
+    Equivalent to add_watch() but generates and stores a cancel_token."""
+    import secrets
+    token = secrets.token_urlsafe(32)  # 43 URL-safe chars
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    email = email.strip().lower()
+    now = utcnow()
+    with get_conn() as conn:
+        ph = _ph()
+        if USE_POSTGRES:
+            _exec(conn, f"""
+                INSERT INTO watches
+                    (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid, cancel_token)
+                VALUES ({ph},{ph},{ph},{ph},{ph},{ph})
+                ON CONFLICT (wiki_title, email) DO UPDATE SET cancel_token = EXCLUDED.cancel_token
+            """, (wiki_title, email, now, filter_occupation_qid, filter_location_qid, token))
+        else:
+            _exec(conn, f"""
+                INSERT OR REPLACE INTO watches
+                    (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid, cancel_token)
+                VALUES (?,?,?,?,?,?)
+            """, (wiki_title, email, now, filter_occupation_qid, filter_location_qid, token))
+    return token
+
+
+def cancel_watch_by_token(token: str) -> bool:
+    """Cancel a watch subscription identified by its cancel_token.
+    Uses hmac.compare_digest for constant-time comparison.
+    Returns True if found and deleted; False if token not found or already used."""
+    import hmac
+
+    token_bytes = token.encode()
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"SELECT cancel_token FROM watches WHERE cancel_token={ph}", (token,))
+        row = _fetchone(cur)
+
+    if row is None:
+        return False
+
+    stored_bytes = (row["cancel_token"] or "").encode()
+    if not hmac.compare_digest(stored_bytes, token_bytes):
+        return False
+
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn, f"DELETE FROM watches WHERE cancel_token={ph}", (token,))
+    return True
 
 
 def get_emails_for(wiki_title: str) -> list[str]:
@@ -526,6 +584,7 @@ def migrate_schema() -> None:
     columns = [
         ("watches", "filter_occupation_qid", "TEXT"),
         ("watches", "filter_location_qid",   "TEXT"),
+        ("watches", "cancel_token",          "TEXT"),
         ("deaths",  "occupation_qids",        "TEXT DEFAULT '[]'"),
         ("deaths",  "location_qids",          "TEXT DEFAULT '[]'"),
         ("deaths",  "wiki_qid",               "TEXT"),

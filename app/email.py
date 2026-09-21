@@ -19,6 +19,9 @@ FROM_EMAIL     = "Mortivox <noreply@mortivox.com>"
 RESEND_URL     = "https://api.resend.com/emails"
 
 
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://mortivox.com")
+
+
 def send_death_notification(
     to_email:     str,
     person_name:  str,
@@ -26,6 +29,7 @@ def send_death_notification(
     death_date:   str,
     wiki_url:     str,
     edit_url:     str | None = None,
+    cancel_token: str | None = None,
 ) -> bool:
     """Send a death notification email. Returns True if sent successfully."""
 
@@ -41,6 +45,13 @@ def send_death_notification(
         f'style="color:#c8b89a">See the Wikipedia edit that detected this →</a></p>'
         if edit_url else ""
     )
+
+    cancel_url = (
+        f"{APP_BASE_URL}/cancel?token={cancel_token}"
+        if cancel_token
+        else f"{APP_BASE_URL}/unsubscribe"
+    )
+    safe_cancel = _html.escape(cancel_url)
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -74,12 +85,26 @@ def send_death_notification(
 
     <div style="text-align:center;font-size:11px;color:#3a3630;line-height:1.8">
       You watched <strong style="color:#5a5650">{safe_name}</strong> on ObituaryWatch.<br>
-      This is an automated notification. Do not reply to this email.
+      This is an automated notification. Do not reply to this email.<br>
+      <a href="{safe_cancel}" style="color:#3a3630">Unsubscribe</a>
     </div>
 
   </div>
 </body>
 </html>"""
+
+    plain = (
+        f"ObituaryWatch — Death detected\n\n"
+        f"{person_name} has died.\n"
+        f"Date: {safe_date}\n\n"
+        f"Wikipedia: {wiki_url}\n"
+        + (f"Edit: {edit_url}\n" if edit_url else "")
+        + f"\nTo unsubscribe: {cancel_url}\n"
+    )
+
+    list_unsub_value = f"<{cancel_url}>"
+    if cancel_token:
+        list_unsub_value = f"<mailto:noreply@mortivox.com?subject=unsubscribe>, <{cancel_url}>"
 
     try:
         r = httpx.post(
@@ -93,6 +118,11 @@ def send_death_notification(
                 "to":      [to_email],
                 "subject": f"ObituaryWatch: {person_name} has died",
                 "html":    html,
+                "text":    plain,
+                "headers": {
+                    "List-Unsubscribe":      list_unsub_value,
+                    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                },
             },
             timeout=10,
         )
