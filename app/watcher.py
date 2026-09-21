@@ -76,7 +76,18 @@ def extract_death_date(wikitext: str) -> str | None:
                 # no real date data (a genuine date always has a 4-digit
                 # year), it isn't an actual death date.
                 real_content = _HTML_COMMENT_RE.sub("", val).strip()
-                if not real_content or not re.search(r"\d{4}", real_content):
+                if not real_content:
+                    continue
+                # If the value contains a {{Death date...}} template, require
+                # the first parameter to be a valid 4-digit year. Without this
+                # check, {{Death date and age|?|1|15|1930|5|31}} would pass
+                # because "1930" (the birth year) satisfies \d{4}, but the
+                # death year itself is "?" — not a real confirmed date.
+                if re.search(r"\{\{\s*[Dd]eath date", real_content):
+                    if not re.search(r"\{\{\s*[Dd]eath date[^|{]*\|\s*\d{4}\b",
+                                     real_content):
+                        continue
+                elif not re.search(r"\d{4}", real_content):
                     continue
                 return val
     except Exception:
