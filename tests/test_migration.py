@@ -85,8 +85,9 @@ def _restore_current_schema() -> None:
     conn = _raw_conn()
     _drop_all(conn)
     conn.close()
-    from app.db import init_db
+    from app.db import init_db, migrate_schema
     init_db()
+    migrate_schema()  # recreate GIN indexes and other migration artifacts
 
 
 def _col_names(conn, table: str) -> set[str]:
