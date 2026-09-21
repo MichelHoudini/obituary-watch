@@ -70,3 +70,30 @@ def load_wikidata_fixtures():
         filters_module._OFFLINE_MODE      = old_offline
     except ImportError:
         yield
+
+
+@pytest.fixture(autouse=True)
+def load_ingestion_fixtures():
+    """Populate app.ingestion with versioned JSON fixtures before each test.
+
+    Sets _OFFLINE_MODE=True so query_wikidata_deaths and confirm_death never
+    make live network calls. Restored after each test.
+    """
+    try:
+        import app.ingestion as ingestion_module
+
+        fixtures_path = Path(__file__).parent / "fixtures" / "wikidata_deaths.json"
+        data = json.loads(fixtures_path.read_text(encoding="utf-8"))
+
+        old_offline  = ingestion_module._OFFLINE_MODE
+        old_fixtures = list(ingestion_module._FIXTURE_DEATHS)
+
+        ingestion_module._OFFLINE_MODE   = True
+        ingestion_module._FIXTURE_DEATHS = data["deaths"]
+
+        yield
+
+        ingestion_module._OFFLINE_MODE   = old_offline
+        ingestion_module._FIXTURE_DEATHS = old_fixtures
+    except ImportError:
+        yield

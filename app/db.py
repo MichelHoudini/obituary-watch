@@ -128,7 +128,8 @@ def init_db():
                     wiki_url         TEXT NOT NULL,
                     edit_url         TEXT,
                     occupation_qids  TEXT DEFAULT '[]',
-                    location_qids    TEXT DEFAULT '[]'
+                    location_qids    TEXT DEFAULT '[]',
+                    wiki_qid         TEXT
                 )
             """)
             _exec(conn, """
@@ -170,7 +171,8 @@ def init_db():
                     wiki_url         TEXT NOT NULL,
                     edit_url         TEXT,
                     occupation_qids  TEXT DEFAULT '[]',
-                    location_qids    TEXT DEFAULT '[]'
+                    location_qids    TEXT DEFAULT '[]',
+                    wiki_qid         TEXT
                 );
                 CREATE TABLE IF NOT EXISTS watcher_health (
                     key                 TEXT PRIMARY KEY,
@@ -465,6 +467,46 @@ def update_death_enrichment(wiki_title: str, occupation_qids: list, location_qid
               (enc_occ, enc_loc, wiki_title))
 
 
+def has_death_by_qid(wiki_qid: str) -> bool:
+    """Return True if a deaths row with this Wikidata QID already exists."""
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"SELECT 1 FROM deaths WHERE wiki_qid={ph}", (wiki_qid,))
+        return _fetchone(cur) is not None
+
+
+def upsert_global_death(
+    wiki_qid: str,
+    wiki_title: str,
+    display_name: str,
+    death_date: str,
+    wiki_url: str,
+) -> bool:
+    """Insert a globally-ingested confirmed death.  Returns True if new row was
+    created.  Idempotent: subsequent calls for the same wiki_qid are no-ops."""
+    now = utcnow()
+    with get_conn() as conn:
+        ph = _ph()
+        if USE_POSTGRES:
+            cur = _exec(conn, f"""
+                INSERT INTO deaths
+                    (wiki_qid, wiki_title, display_name, death_date, detected_at, wiki_url)
+                VALUES ({ph},{ph},{ph},{ph},{ph},{ph})
+                ON CONFLICT (wiki_title) DO UPDATE
+                    SET wiki_qid = EXCLUDED.wiki_qid
+                    WHERE deaths.wiki_qid IS NULL
+                RETURNING id
+            """, (wiki_qid, wiki_title, display_name, death_date, now, wiki_url))
+            return _fetchone(cur) is not None
+        else:
+            cur = _exec(conn, f"""
+                INSERT OR IGNORE INTO deaths
+                    (wiki_qid, wiki_title, display_name, death_date, detected_at, wiki_url)
+                VALUES (?,?,?,?,?,?)
+            """, (wiki_qid, wiki_title, display_name, death_date, now, wiki_url))
+            return cur.rowcount > 0
+
+
 def get_death_with_enrichment(wiki_title: str) -> dict | None:
     """Return a deaths row with occupation_qids/location_qids decoded to lists."""
     row = get_death_for_title(wiki_title)
@@ -486,6 +528,7 @@ def migrate_schema() -> None:
         ("watches", "filter_location_qid",   "TEXT"),
         ("deaths",  "occupation_qids",        "TEXT DEFAULT '[]'"),
         ("deaths",  "location_qids",          "TEXT DEFAULT '[]'"),
+        ("deaths",  "wiki_qid",               "TEXT"),
     ]
     with get_conn() as conn:
         for table, col, col_def in columns:

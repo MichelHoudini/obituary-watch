@@ -1,0 +1,56 @@
+name: ObituaryWatch — Global Death Ingestor
+
+# Runs every 6 hours to ingest confirmed deaths from Wikidata that are NOT
+# in the watched set (which the real-time watcher already handles).
+# NEVER runs on Render — only on GitHub Actions.
+
+on:
+  schedule:
+    - cron: '30 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      days_back:
+        description: 'Days back to query (default: INGESTOR_WINDOW_DAYS env var or 3)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run (log only, no DB writes)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install requests mwparserfromhell psycopg2-binary sentry-sdk
+
+      - name: Run global death ingestor
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          INGESTOR_WINDOW_DAYS: ${{ vars.INGESTOR_WINDOW_DAYS || '3' }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.days_back }}" ]; then
+            ARGS="$ARGS ${{ github.event.inputs.days_back }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python -m app.ingestion $ARGS
