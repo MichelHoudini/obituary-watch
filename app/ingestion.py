@@ -69,23 +69,20 @@ def _qid_from_uri(uri: str) -> str | None:
     return m.group(0) if m else None
 
 
-def query_wikidata_deaths(days_back: int) -> list[dict]:
-    """Return raw SPARQL rows for people who died in the last `days_back` days.
-    Each row: {qid, wiki_title, display_name, death_date_raw}.
-    In offline mode, returns _FIXTURE_DEATHS instead.
-    Retries up to SPARQL_MAX_RETRIES times with exponential backoff on failure."""
-    if _OFFLINE_MODE:
-        # Return full fixture dicts so confirm_death() can use categories/wikitext
-        return [dict(d) for d in _FIXTURE_DEATHS]
+def _query_wikidata_range(from_dt: datetime, to_dt: datetime) -> list[dict]:
+    """Core SPARQL query for an explicit [from_dt, to_dt) window.
 
+    Returns rows sorted by death_date_raw descending (most recent first).
+    Retries up to SPARQL_MAX_RETRIES times with exponential backoff.
+    """
     import requests
 
-    now = datetime.now(UTC)
-    from_dt = (now - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
-    to_dt = now.strftime("%Y-%m-%dT23:59:59Z")
-    sparql = _SPARQL_QUERY.format(from_date=from_dt, to_date=to_dt)
+    from_s = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    to_s   = to_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    sparql = _SPARQL_QUERY.format(from_date=from_s, to_date=to_s)
 
     last_exc: Exception | None = None
+    data: dict = {}
     for attempt in range(SPARQL_MAX_RETRIES):
         try:
             r = requests.get(
@@ -107,7 +104,7 @@ def query_wikidata_deaths(days_back: int) -> list[dict]:
             if attempt < SPARQL_MAX_RETRIES - 1:
                 time.sleep(wait)
     else:
-        log.error("Wikidata SPARQL query failed after %d attempts: %s", SPARQL_MAX_RETRIES, last_exc)
+        log.error("Wikidata SPARQL failed after %d attempts: %s", SPARQL_MAX_RETRIES, last_exc)
         return []
 
     results = []
@@ -117,15 +114,32 @@ def query_wikidata_deaths(days_back: int) -> list[dict]:
         label = row.get("personLabel", {}).get("value", wiki_title.replace("_", " "))
         death_date_raw = row.get("deathDate", {}).get("value", "")
         if qid and wiki_title:
-            results.append(
-                {
-                    "qid": qid,
-                    "wiki_title": wiki_title,
-                    "display_name": label,
-                    "death_date_raw": death_date_raw,
-                }
-            )
+            results.append({
+                "qid": qid,
+                "wiki_title": wiki_title,
+                "display_name": label,
+                "death_date_raw": death_date_raw,
+            })
+
+    # Stable order: most-recent deaths first so the call-limit always defers
+    # the oldest unprocessed deaths, which are less likely to be confirmed fast.
+    results.sort(key=lambda c: c.get("death_date_raw", ""), reverse=True)
     return results
+
+
+def query_wikidata_deaths(days_back: int) -> list[dict]:
+    """Return SPARQL rows for people who died in the last `days_back` days.
+
+    In offline mode returns _FIXTURE_DEATHS (no sorting applied — fixtures
+    are small and their order is deterministic).
+    """
+    if _OFFLINE_MODE:
+        return [dict(d) for d in _FIXTURE_DEATHS]
+
+    now     = datetime.now(UTC)
+    from_dt = (now - timedelta(days=days_back)).replace(hour=0, minute=0, second=0, microsecond=0)
+    to_dt   = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    return _query_wikidata_range(from_dt, to_dt)
 
 
 def _fetch_wikipedia_data(wiki_title: str) -> tuple[list[str], str | None]:
@@ -199,22 +213,28 @@ def confirm_death(candidate: dict) -> tuple[bool, str | None]:
     return True, death_date
 
 
-def run(days_back: int | None = None, dry_run: bool = False) -> dict:
-    """Ingest confirmed deaths from Wikidata for the last `days_back` days.
+# ─────────────────────────────────────────────────────────────────────────────
+# Core evaluation/insertion logic, shared by run() and run_window().
+# ─────────────────────────────────────────────────────────────────────────────
 
-    Returns summary: {checked, confirmed, inserted, skipped_existing, errors, aborted}.
+def _run_candidates(
+    candidates: list[dict],
+    max_wikipedia_calls: int,
+    dry_run: bool,
+) -> dict:
+    """Evaluate and optionally persist `candidates`.
 
-    Safety constraints applied on every run:
-    - Wikipedia calls are capped at MAX_WIKIPEDIA_CALLS per execution.
-    - If confirmed (would-insert) count exceeds MAX_INSERTS_PER_RUN, the entire
-      run is aborted without writing any rows (safety brake).
-    - dry_run=True prints a sample of up to 20 candidates with accept/reject reason.
+    Two-pass design:
+      Pass 1 — DB checks only (no network).  Separates already-existing from new.
+      Pass 2 — Wikipedia confirmation for up to max_wikipedia_calls new candidates.
+
+    Always logs the dry-run summary line (total / already_in_db / will_call /
+    deferred_by_limit) so callers can see what would happen even outside dry_run.
+
+    Returns summary dict: checked, confirmed, inserted, skipped_existing, errors, aborted.
     """
     from app.db import has_death_by_qid, is_already_dead, is_already_watched, upsert_global_death
     from app.filters import enrich_death
-
-    if days_back is None:
-        days_back = INGESTOR_WINDOW_DAYS
 
     summary: dict = {
         "checked": 0,
@@ -225,57 +245,58 @@ def run(days_back: int | None = None, dry_run: bool = False) -> dict:
         "aborted": False,
     }
 
-    candidates = query_wikidata_deaths(days_back)
-    log.info("Wikidata returned %d candidates (window=%d days)", len(candidates), days_back)
-
-    # In dry_run mode, collect up to 20 sample decisions to print at the end.
-    dry_run_sample: list[dict] = []
-    wikipedia_calls = 0
-
-    # First pass: evaluate all candidates, count confirms (safety brake pre-check).
-    # We track them in a list to do a single write pass afterwards.
-    pending_inserts: list[tuple[dict, str]] = []  # (candidate, death_date)
-
+    # ── Pass 1: DB checks — no Wikipedia calls ────────────────────────────────
+    new_candidates: list[dict] = []
     for cand in candidates:
         summary["checked"] += 1
-        qid = cand["qid"]
-        wiki_title = cand["wiki_title"]
-
         try:
-            if is_already_watched(wiki_title):
+            if (
+                is_already_watched(cand["wiki_title"])
+                or has_death_by_qid(cand["qid"])
+                or is_already_dead(cand["wiki_title"])
+            ):
                 summary["skipped_existing"] += 1
-                _dry_sample(dry_run_sample, wiki_title, qid, "SKIP: already watched")
-                continue
-            if has_death_by_qid(qid) or is_already_dead(wiki_title):
-                summary["skipped_existing"] += 1
-                _dry_sample(dry_run_sample, wiki_title, qid, "SKIP: already in DB")
-                continue
-
-            if wikipedia_calls >= MAX_WIKIPEDIA_CALLS:
-                _dry_sample(dry_run_sample, wiki_title, qid, "SKIP: Wikipedia call limit reached")
-                log.warning(
-                    "Wikipedia call limit (%d) reached; stopping evaluation at %d/%d checked",
-                    MAX_WIKIPEDIA_CALLS, summary["checked"], len(candidates),
-                )
-                break
-
-            if not _OFFLINE_MODE:
-                wikipedia_calls += 1
-            confirmed, death_date = confirm_death(cand)
-
-            if not confirmed:
-                _dry_sample(dry_run_sample, wiki_title, qid, "REJECT: death not confirmed by Wikipedia")
-                continue
-
-            summary["confirmed"] += 1
-            _dry_sample(dry_run_sample, wiki_title, qid, f"ACCEPT: death_date={death_date}")
-            pending_inserts.append((cand, death_date))
-
+            else:
+                new_candidates.append(cand)
         except Exception as exc:
-            log.error("Error evaluating %s (%s): %s", wiki_title, qid, exc)
+            log.error("DB check failed for %s (%s): %s", cand.get("wiki_title"), cand.get("qid"), exc)
             summary["errors"] += 1
 
-    # Safety brake: abort before writing if too many new deaths in one run.
+    will_call_wiki = new_candidates[:max_wikipedia_calls]
+    deferred_by_limit = new_candidates[max_wikipedia_calls:]
+
+    log.info(
+        "[INGESTOR] total=%d | already_in_db=%d | will_call_wiki=%d | deferred_next_run=%d",
+        len(candidates),
+        summary["skipped_existing"],
+        len(will_call_wiki),
+        len(deferred_by_limit),
+    )
+
+    # ── Pass 2: Wikipedia confirmation (runs even in dry_run to count confirmed) ─
+    pending_inserts: list[tuple[dict, str]] = []
+    for cand in will_call_wiki:
+        try:
+            confirmed, death_date = confirm_death(cand)
+            if confirmed:
+                summary["confirmed"] += 1
+                pending_inserts.append((cand, death_date))
+            if not _OFFLINE_MODE:
+                time.sleep(0)  # yield; real throttle happens after upsert
+        except Exception as exc:
+            log.error("Wikipedia check failed for %s (%s): %s",
+                      cand.get("wiki_title"), cand.get("qid"), exc)
+            summary["errors"] += 1
+
+    if dry_run:
+        _print_dry_run_sample(will_call_wiki, deferred_by_limit, dry_run=True)
+        log.info(
+            "[DRY-RUN] confirmed=%d would-insert=%d — re-run without --dry-run to commit.",
+            summary["confirmed"], len(pending_inserts),
+        )
+        return summary
+
+    # ── Safety brake ─────────────────────────────────────────────────────────
     if len(pending_inserts) > MAX_INSERTS_PER_RUN:
         log.error(
             "SAFETY BRAKE: %d confirmed deaths exceed MAX_INSERTS_PER_RUN=%d — "
@@ -283,23 +304,13 @@ def run(days_back: int | None = None, dry_run: bool = False) -> dict:
             len(pending_inserts), MAX_INSERTS_PER_RUN,
         )
         summary["aborted"] = True
-        _print_dry_run_sample(dry_run_sample)
         return summary
 
-    if dry_run:
-        _print_dry_run_sample(dry_run_sample)
-        log.info(
-            "[DRY-RUN] Would insert %d death(s). "
-            "Re-run without --dry-run to commit.",
-            len(pending_inserts),
-        )
-        return summary
-
-    # Write pass.
+    # ── Write pass ───────────────────────────────────────────────────────────
     for cand, death_date in pending_inserts:
-        qid = cand["qid"]
+        qid        = cand["qid"]
         wiki_title = cand["wiki_title"]
-        wiki_url = f"https://en.wikipedia.org/wiki/{wiki_title}"
+        wiki_url   = f"https://en.wikipedia.org/wiki/{wiki_title}"
         try:
             is_new = upsert_global_death(
                 wiki_qid=qid,
@@ -315,36 +326,95 @@ def run(days_back: int | None = None, dry_run: bool = False) -> dict:
 
             if not _OFFLINE_MODE:
                 time.sleep(BATCH_SLEEP_SECONDS)
-
         except Exception as exc:
-            log.error("Error inserting %s (%s): %s", wiki_title, qid, exc)
+            log.error("Insert failed for %s (%s): %s", wiki_title, qid, exc)
             summary["errors"] += 1
 
+    return summary
+
+
+def _print_dry_run_sample(
+    will_call: list[dict],
+    deferred: list[dict],
+    dry_run: bool = False,
+) -> None:
+    prefix = "[DRY-RUN]" if dry_run else "[INGESTOR]"
+    sample = will_call[:20]
+    if sample:
+        log.info("%s Sample of up to 20 new candidates that would be confirmed:", prefix)
+        for i, cand in enumerate(sample, 1):
+            log.info(
+                "%s %2d. %-40s (%s) death_date_raw=%s",
+                prefix, i,
+                cand.get("wiki_title", "?"),
+                cand.get("qid", "?"),
+                cand.get("death_date_raw", "?"),
+            )
+    if deferred:
+        log.info(
+            "%s %d candidate(s) deferred to next run (call limit).",
+            prefix, len(deferred),
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public entry points
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run(days_back: int | None = None, dry_run: bool = False) -> dict:
+    """Ingest confirmed deaths from Wikidata for the last `days_back` days.
+
+    Returns summary: {checked, confirmed, inserted, skipped_existing, errors, aborted}.
+    """
+    if days_back is None:
+        days_back = INGESTOR_WINDOW_DAYS
+
+    candidates = query_wikidata_deaths(days_back)
+    log.info("Wikidata returned %d candidates (window=%d days)", len(candidates), days_back)
+
+    summary = _run_candidates(candidates, MAX_WIKIPEDIA_CALLS, dry_run)
     log.info(
-        "Ingestor complete: checked=%d confirmed=%d inserted=%d "
-        "skipped_existing=%d errors=%d wikipedia_calls=%d aborted=%s",
+        "run() complete: checked=%d confirmed=%d inserted=%d "
+        "skipped_existing=%d errors=%d aborted=%s",
         summary["checked"], summary["confirmed"], summary["inserted"],
-        summary["skipped_existing"], summary["errors"], wikipedia_calls,
-        summary["aborted"],
+        summary["skipped_existing"], summary["errors"], summary["aborted"],
     )
     return summary
 
 
-def _dry_sample(sample: list[dict], wiki_title: str, qid: str, reason: str) -> None:
-    """Append to dry-run sample (capped at 20 entries)."""
-    if len(sample) < 20:
-        sample.append({"wiki_title": wiki_title, "qid": qid, "reason": reason})
+def run_window(
+    from_dt: datetime,
+    to_dt: datetime,
+    max_wikipedia_calls: int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Ingest deaths for an explicit date window.  Used by the backfill script.
 
+    Args:
+        from_dt: start of window (inclusive), UTC.
+        to_dt:   end of window (exclusive), UTC.
+        max_wikipedia_calls: override per-run call limit (default: MAX_WIKIPEDIA_CALLS).
+        dry_run: if True, evaluate without writing.
 
-def _print_dry_run_sample(sample: list[dict]) -> None:
-    if not sample:
-        return
-    log.info("[DRY-RUN] Sample of up to 20 candidates evaluated:")
-    for i, entry in enumerate(sample, 1):
-        log.info(
-            "[DRY-RUN] %2d. %-40s (%s) — %s",
-            i, entry["wiki_title"], entry["qid"], entry["reason"],
-        )
+    Returns the same summary dict as run().
+    """
+    if max_wikipedia_calls is None:
+        max_wikipedia_calls = MAX_WIKIPEDIA_CALLS
+
+    candidates = _query_wikidata_range(from_dt, to_dt)
+    log.info(
+        "run_window() [%s → %s]: %d candidates",
+        from_dt.strftime("%Y-%m-%d"), to_dt.strftime("%Y-%m-%d"), len(candidates),
+    )
+
+    summary = _run_candidates(candidates, max_wikipedia_calls, dry_run)
+    log.info(
+        "run_window() complete: checked=%d confirmed=%d inserted=%d "
+        "skipped_existing=%d errors=%d aborted=%s",
+        summary["checked"], summary["confirmed"], summary["inserted"],
+        summary["skipped_existing"], summary["errors"], summary["aborted"],
+    )
+    return summary
 
 
 if __name__ == "__main__":

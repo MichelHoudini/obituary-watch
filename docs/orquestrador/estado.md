@@ -45,6 +45,7 @@ gh auth login --scopes repo,workflow
 | PR 5 | feat/ingestao-global | docs/auditoria-filtros | 1941e6b | PRONTO — 228 pass, 15 novos testes ING |
 | PR 6 | fix/tokens-e-email-headers | feat/ingestao-global | 03806dc | PRONTO — 235 pass, 7 xfail→pass |
 | PR 7 | fix/schema-e-consistencia | fix/tokens-e-email-headers | 2563d91 | PRONTO — 250 pass, CONF/ING/ADV novos testes |
+| PR 8 | fix/perf-ci-backfill | fix/schema-e-consistencia | (pending) | EM CURSO — PERF-004 CI, seed 300k, backfill v2, run_window |
 
 Para criar os PRs após autenticar o gh CLI:
 ```powershell
@@ -57,7 +58,27 @@ gh pr create --draft --base feat/paginas-nicho --head docs/auditoria-filtros --t
 gh pr create --draft --base docs/auditoria-filtros --head feat/ingestao-global --title "feat: global death ingestor via Wikidata SPARQL + Wikipedia confirmation"
 gh pr create --draft --base feat/ingestao-global --head fix/tokens-e-email-headers --title "fix: ADV-006/007/008 cancel tokens, EML-003-006 plain-text/headers"
 gh pr create --draft --base fix/tokens-e-email-headers --head fix/schema-e-consistencia --title "fix: schema TEXT[], GIN index, is_confirmed_death, safe ingestor, Postgres CI"
+gh pr create --draft --base fix/schema-e-consistencia --head fix/perf-ci-backfill --title "fix: PERF-004 CI, seed 300k, backfill janelas reais + resume, run_window"
 ```
+
+## Análise dos 12 testes skipped (local e CI)
+
+| # | Teste | Motivo | Desbloqueável? |
+|---|---|---|---|
+| 1 | `test_eml007_spf_record_present` | @live: DNS real | Não — por design |
+| 2 | `test_eml008_dkim_record_present` | @live: DNS real | Não — por design |
+| 3 | `test_eml009_dmarc_record_present` | @live: DNS real | Não — por design |
+| 4 | `test_eml010_bounce_suppresses_future_sends` | Feature pendente (webhook Resend) | Só com implementação |
+| 5 | `test_eml011_complaint_suppresses_future_sends` | Feature pendente (webhook Resend) | Só com implementação |
+| 6 | `test_perf003_warm_ttfb_under_500ms` | @live: servidor aquecido | Não — por design |
+| 7 | **`test_perf004_gin_index_used_for_array_containment`** | DATABASE_URL apagado por conftest antes do teste | **Desbloqueado neste PR** — captura módulo-level |
+| 8 | `test_seo008_http_redirects_to_https_in_one_hop` | Render proxy, não app | Não — por design |
+| 9 | `test_seo009_www_redirects_to_apex_in_one_hop` | Render proxy, não app | Não — por design |
+| 10 | `test_seo021_live_sitemap_urls_accessible` | @live: mortivox.com ao vivo | Não — por design |
+| 11 | `test_seo022_live_warm_ttfb_under_500ms` | @live: servidor aquecido | Não — por design |
+| 12 | `test_seo023_lighthouse_lcp_cls` | @live: Lighthouse CLI | Não — por design |
+
+**Resultado esperado no CI após merge do PR 8:** 11 skipped (PERF-004 passa → 1 skip a menos).
 
 ## Pendências humanas (Michel)
 
@@ -66,6 +87,7 @@ gh pr create --draft --base fix/tokens-e-email-headers --head fix/schema-e-consi
 - [ ] **Banco de teste Postgres**: Docker não disponível. Pode instalar Docker Desktop ou criar segundo projeto Supabase de teste?
 - [ ] **E2E local BLOQUEADO** — WinError 10106 impede uvicorn em subprocess; testes e2e só rodam no CI (Linux). Não precisa de ação imediata.
 - [ ] **SPF DNS**: adicionar `v=spf1 include:spf.resend.com ~all` no DNS do mortivox.com para evitar rejeição de email.
+- [ ] **Versão do Postgres no Supabase**: o `ci.yml` usa `postgres:14` e o `perf.yml` usa `postgres:15`. Qual versão exata está no Supabase de produção? Ver em: Supabase Dashboard → Settings → Database → Postgres Version. Responder aqui para alinhar as imagens de CI.
 
 ## Comandos que funcionam no PowerShell (C:\IA\obituary-watch)
 

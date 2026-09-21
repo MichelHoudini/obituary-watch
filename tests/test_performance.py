@@ -4,13 +4,21 @@ Testes de performance — PERF-001 a PERF-004.
 PERF-001: Match de 500 mortes vs. assinaturas: p95 < 1s.
 PERF-002: Consulta de deaths DB: < 200ms.
 PERF-003: TTFB quente < 500ms — @live apenas (marcado skip).
-PERF-004: EXPLAIN ANALYZE com índice GIN — xfail (requer Postgres).
+PERF-004: EXPLAIN ANALYZE com índice GIN — requer Postgres via DATABASE_URL.
 
 Usa banco SQLite isolado via conftest.py (autouse fixture).
+
+ATENÇÃO: conftest.isolated_db chama monkeypatch.delenv("DATABASE_URL") antes de
+cada teste. Para que PERF-004 saiba se Postgres está disponível, capturamos a URL
+no nível de módulo (antes de qualquer fixture ser executada).
 """
+import os
 import time
 
 import pytest
+
+# Capturado na importação do módulo, antes do conftest.isolated_db apagar DATABASE_URL.
+_POSTGRES_URL: str | None = os.environ.get("DATABASE_URL")
 
 # ── PERF-001: match de 500 mortes vs. assinaturas ────────────────────────────
 
@@ -148,29 +156,34 @@ def test_perf003_warm_ttfb_under_500ms():
 # ── PERF-004: EXPLAIN ANALYZE com GIN index (requer Postgres via DATABASE_URL) ─
 
 def test_perf004_gin_index_used_for_array_containment():
-    """EXPLAIN ANALYZE deve mostrar uso de índice GIN para consultas de array
-    do tipo WHERE occupation_qids @> ARRAY['Q177220'].
+    """Verifica que o índice GIN em occupation_qids existe e é válido.
 
-    Semeia 10.000 linhas (metade com Q177220 em occupation_qids) para que o
-    planner prefira o índice GIN em vez de sequential scan."""
-    import os
-    if not os.environ.get("DATABASE_URL"):
-        pytest.skip("DATABASE_URL não configurado; pulando teste de GIN index")
+    Usa enable_seqscan=off para forçar o planner a usar o índice, o que
+    prova que o índice existe e está válido independente do tamanho da tabela.
+    Semeia ~1 000 linhas (suficiente para um plano com índice quando seqscan
+    está desligado) e faz cleanup ao final.
+
+    Roda apenas quando DATABASE_URL está disponível no ambiente CI (service
+    postgres no ci.yml).  O conftest.isolated_db apaga DATABASE_URL via
+    monkeypatch para cada teste, por isso capturamos _POSTGRES_URL na
+    importação do módulo (antes das fixtures)."""
+    if not _POSTGRES_URL:
+        pytest.skip("DATABASE_URL não disponível; pulando teste de GIN index")
 
     import psycopg2
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(_POSTGRES_URL)
     conn.autocommit = False
     cur = conn.cursor()
 
-    # Seed 10 000 rows; half have Q177220 in occupation_qids.
+    # Seed 1 000 rows; half have Q177220 in occupation_qids.
     cur.execute("DELETE FROM deaths WHERE wiki_title LIKE 'perf004_seed_%'")
     rows_a = [
         (f"perf004_seed_a_{i}", f"Seed A {i}", "{Q177220,Q36180}", "{Q142}")
-        for i in range(5000)
+        for i in range(500)
     ]
     rows_b = [
         (f"perf004_seed_b_{i}", f"Seed B {i}", "{Q36180}", "{Q30}")
-        for i in range(5000)
+        for i in range(500)
     ]
     cur.executemany(
         "INSERT INTO deaths (wiki_title, display_name, occupation_qids, location_qids) "
@@ -180,6 +193,8 @@ def test_perf004_gin_index_used_for_array_containment():
     )
     conn.commit()
 
+    # Disable seq scan so the planner is forced to use the GIN index if it exists.
+    cur.execute("SET enable_seqscan = off")
     cur.execute("""
         EXPLAIN ANALYZE
         SELECT wiki_title FROM deaths
@@ -187,6 +202,7 @@ def test_perf004_gin_index_used_for_array_containment():
         LIMIT 10
     """)
     plan = "\n".join(r[0] for r in cur.fetchall())
+    cur.execute("RESET enable_seqscan")
 
     # Cleanup
     cur.execute("DELETE FROM deaths WHERE wiki_title LIKE 'perf004_seed_%'")
@@ -194,5 +210,6 @@ def test_perf004_gin_index_used_for_array_containment():
     conn.close()
 
     assert "Bitmap Index Scan" in plan or "Index Scan" in plan, (
-        f"GIN index não usado no plano:\n{plan}"
+        f"GIN index não foi usado (mesmo com enable_seqscan=off) — "
+        f"índice pode estar ausente ou inválido.\nPlano:\n{plan}"
     )

@@ -31,6 +31,11 @@ Atualizado: 2026-09-20
 | 2026-09-21 | Ingestor global desligado por padrão (`INGESTOR_ENABLED`); disparo manual sem essa variável | Evita ingestão acidental em escala antes de validação manual com dry_run | obrigatório |
 | 2026-09-21 | Freio de segurança no ingestor: aborta sem gravar se >500 inserções por execução | Spike de dados no Wikidata (e.g. correção em lote) não polui o banco sem revisão humana | obrigatório |
 | 2026-09-21 | Ingestor pula títulos já monitorados (`is_already_watched`) | Se ingestor inserir antes do watcher, `record_death` retorna False e o email de watcher nunca é enviado | obrigatório |
+| 2026-09-21 | `run()` faz dois passos: (1) verificação DB de todos os candidatos sem rede; (2) Wikipedia apenas para novos | Evita chamadas Wikipedia para QIDs já na base; ordem estável (mais recentes primeiro) | obrigatório |
+| 2026-09-21 | Backfill usa janelas absolutas (from_date→to_date) via `run_window()`, não `days_back` crescente | `days_back` crescente re-consulta todos os lotes anteriores no SPARQL; janelas não se sobrepõem | obrigatório |
+| 2026-09-21 | Backfill salva estado em JSON para retomada; sem escrita de estado em `--dry-run` | Interrupção de longa execução não perde progresso; dry-run não altera nada | padrão, Michel pode trocar |
+| 2026-09-21 | `conftest.isolated_db` apaga DATABASE_URL via monkeypatch; PERF-004 captura URL no nível de módulo | Captura antes de qualquer fixture para que o teste Postgres rode em CI | obrigatório |
+| 2026-09-21 | CI de benchmark (perf.yml) separado do CI bloqueante (ci.yml); usa `postgres:15`, dispatch manual ou noturno | Seed de 300k linhas é lento demais para o CI de PR | padrão, Michel pode trocar |
 
 ## Decisões de teste
 
