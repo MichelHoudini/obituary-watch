@@ -27,7 +27,7 @@ gh auth login --scopes repo,workflow
 |---|---|---|---|---|
 | 0. Reconhecimento | qa/f0-reconhecimento | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f0-reconhecimento) | ENTREGUE | Baseline registrado; gh sem auth, PR manual |
 | 1. Plano e contrato | qa/f1-plano | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f1-plano) | ENTREGUE | Plano, contrato filtros, decisões |
-| 2. Unidade e integração | qa/f2-unidade-integracao | — | PENDENTE | — |
+| 2. Unidade e integração | qa/f2-unidade-integracao | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f2-unidade-integracao) | ENTREGUE | 85 pass, 23 xfail; 54% cov; bug UNI-003b corrigido |
 | 3. Sistema (e2e, email, adversarial, perf) | qa/f3-sistema | — | PENDENTE | — |
 | 4. Portão técnico de SEO | qa/f4-seo | — | PENDENTE | — |
 | 5. Search Console e indexação | qa/f5-search-console | — | PENDENTE | — |
