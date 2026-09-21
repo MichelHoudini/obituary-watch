@@ -244,8 +244,21 @@ def test_adv011_repeated_search_query_no_500():
 
 # ── ADV-012: Unicode estranho em wiki_title ──────────────────────────────────
 
+def test_adv012_null_byte_in_wiki_title_rejected_with_validation_error():
+    """\x00 in wiki_title must raise ValueError -- user should know input was invalid."""
+    from app.db import add_watch
+
+    with pytest.raises(ValueError, match=r"NUL"):
+        add_watch("\x00", "unicode-test@example.com")
+
+
+def test_adv012_null_byte_in_watch_endpoint_returns_400():
+    """\x00 in wiki_title via POST /watch must return 400, not 500."""
+    r = client.post("/watch", json={"wiki_title": "\x00", "email": "x@example.com"})
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}: {r.text}"
+
+
 @pytest.mark.parametrize("weird_title", [
-    "\x00",                    # null byte
     "Person�",            # replacement character
     "Ñoño",                    # non-ASCII
     "日本語タイトル",              # CJK

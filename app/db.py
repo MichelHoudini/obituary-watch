@@ -133,8 +133,8 @@ def init_db():
                     detected_at      TEXT NOT NULL,
                     wiki_url         TEXT NOT NULL,
                     edit_url         TEXT,
-                    occupation_qids  TEXT[] DEFAULT '{}',
-                    location_qids    TEXT[] DEFAULT '{}',
+                    occupation_qids  TEXT[] DEFAULT '{}' NOT NULL,
+                    location_qids    TEXT[] DEFAULT '{}' NOT NULL,
                     wiki_qid         TEXT
                 )
             """)
@@ -258,7 +258,9 @@ def add_watch(
     filter_occupation_qid: str | None = None,
     filter_location_qid: str | None = None,
 ) -> bool:
-    wiki_title = wiki_title.replace("\x00", "").strip().replace(" ", "_")
+    if "\x00" in wiki_title:
+        raise ValueError("wiki_title contains NUL bytes (\\x00) and is not valid")
+    wiki_title = wiki_title.strip().replace(" ", "_")
     email = email.strip().lower()
     if wiki_title:
         add_watched(wiki_title, wiki_title.replace("_", " "), "User-monitored page", None)
@@ -725,15 +727,20 @@ def _migrate_schema_postgres() -> None:
             log.error("migrate_schema: %s failed: %r", step, exc)
             errors.append(step)
 
-    # ── Step 3: Set TEXT[] defaults ──────────────────────────────────────────
+    # ── Step 3: Set TEXT[] defaults, backfill NULLs, and enforce NOT NULL ───────
     for col in ("occupation_qids", "location_qids"):
         try:
             with get_conn() as conn:
                 if _pg_col_udt(conn, "deaths", col) == "_text":
+                    # Backfill any NULLs not covered by the USING clause in Step 2.
+                    _exec(conn,
+                          f"UPDATE deaths SET {col} = ARRAY[]::TEXT[] WHERE {col} IS NULL")
                     _exec(conn,
                           f"ALTER TABLE deaths ALTER COLUMN {col} SET DEFAULT '{{}}'::TEXT[]")
+                    _exec(conn,
+                          f"ALTER TABLE deaths ALTER COLUMN {col} SET NOT NULL")
         except Exception as exc:
-            log.warning("migrate_schema: DEFAULT %s non-critical: %r", col, exc)
+            log.warning("migrate_schema: DEFAULT/NOT NULL %s non-critical: %r", col, exc)
 
     # ── Step 4: GIN indexes and unique index on wiki_qid ─────────────────────
     index_stmts = [

@@ -326,7 +326,10 @@ def add_watch_endpoint(req: WatchRequest, request: Request):
         if not _QID_RE.match(qid):
             raise HTTPException(400, f"invalid QID format: {qid!r}")
 
-    is_new = add_watch(title, email, filter_occupation_qid=occ, filter_location_qid=loc)
+    try:
+        is_new = add_watch(title, email, filter_occupation_qid=occ, filter_location_qid=loc)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if title:
         info = get_person_info(title)
         person_name = (info or {}).get("name") or title.replace("_", " ")

@@ -29,6 +29,12 @@ pytestmark = pytest.mark.skipif(
     reason="Postgres DATABASE_URL required (set by CI quality job)",
 )
 
+if _POSTGRES_URL:
+    # Fail loud at collection time if the URL is not a safe local test DB.
+    # conftest.py adds tests/ to sys.path before this module is imported.
+    from db_guard import assert_test_db_safe as _assert_safe  # noqa: PLC0415, E402
+    _assert_safe(_POSTGRES_URL)
+
 
 # ---------------------------------------------------------------------------
 # Override isolated_db for this module: keep DATABASE_URL intact.
@@ -165,12 +171,23 @@ def test_mig002_legacy_schema_with_data():
         "INSERT INTO watches (wiki_title, email, created_at) VALUES (%s, %s, %s)",
         ("Pessoa_B", "b@example.com", _NOW),
     )
-    # death without arrays (legacy)
+    # death without arrays (legacy schema has no occupation_qids column)
     cur.execute(
         "INSERT INTO deaths (wiki_title, display_name, death_date, detected_at, wiki_url)"
         " VALUES (%s, %s, %s, %s, %s)",
         ("Pessoa_A", "Pessoa A", "2024-01-01", _NOW,
          "https://en.wikipedia.org/wiki/Pessoa_A"),
+    )
+    # Add occupation_qids column WITHOUT a default to simulate a partially-migrated
+    # production database where some rows could have NULL (column added but not yet
+    # backfilled).  This row will also have NULL after the manual ADD COLUMN.
+    cur.execute("ALTER TABLE deaths ADD COLUMN occupation_qids TEXT")
+    cur.execute("ALTER TABLE deaths ADD COLUMN location_qids TEXT")
+    cur.execute(
+        "INSERT INTO deaths (wiki_title, display_name, death_date, detected_at, wiki_url,"
+        " occupation_qids, location_qids) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        ("Pessoa_Null", "Pessoa Null", "2024-01-01", _NOW,
+         "https://en.wikipedia.org/wiki/Pessoa_Null", None, None),
     )
     conn.close()
 
@@ -190,23 +207,63 @@ def test_mig002_legacy_schema_with_data():
         assert _col_udt(conn, "deaths", "occupation_qids") == "_text"
         assert _col_udt(conn, "deaths", "location_qids")   == "_text"
 
+        # NOT NULL constraint must be set after migration
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT is_nullable FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'deaths'
+              AND column_name = 'occupation_qids'
+        """)
+        assert cur.fetchone()[0] == "NO", "occupation_qids must be NOT NULL after migration"
+        cur.execute("""
+            SELECT is_nullable FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'deaths'
+              AND column_name = 'location_qids'
+        """)
+        assert cur.fetchone()[0] == "NO", "location_qids must be NOT NULL after migration"
+
         # GIN indexes created
         assert _idx_exists(conn, "idx_deaths_occupation_qids")
         assert _idx_exists(conn, "idx_deaths_location_qids")
         assert _idx_exists(conn, "idx_deaths_wiki_qid")
 
         # original data preserved
-        cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM deaths")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 2
 
+        # pre-migration row without arrays — got DEFAULT '[]' then converted to []
         cur.execute(
             "SELECT occupation_qids, location_qids FROM deaths WHERE wiki_title = %s",
             ("Pessoa_A",),
         )
         row = cur.fetchone()
-        assert row[0] == []
-        assert row[1] == []
+        assert row[0] == [], "pre-migration row should have occupation_qids == []"
+        assert row[1] == [], "pre-migration row should have location_qids == []"
+
+        # pre-migration NULL row — NULL must become []
+        cur.execute(
+            "SELECT occupation_qids, location_qids FROM deaths WHERE wiki_title = %s",
+            ("Pessoa_Null",),
+        )
+        row = cur.fetchone()
+        assert row[0] == [], "NULL occupation_qids must become [] after migration"
+        assert row[1] == [], "NULL location_qids must become [] after migration"
+
+        # post-migration insert WITHOUT specifying arrays must get DEFAULT '{}'
+        cur.execute(
+            "INSERT INTO deaths (wiki_title, display_name, detected_at, wiki_url)"
+            " VALUES (%s, %s, %s, %s)",
+            ("Post_Migration", "Post Migration", _NOW,
+             "https://en.wikipedia.org/wiki/Post_Migration"),
+        )
+        conn.commit()
+        cur.execute(
+            "SELECT occupation_qids, location_qids FROM deaths WHERE wiki_title = %s",
+            ("Post_Migration",),
+        )
+        row = cur.fetchone()
+        assert row[0] == [], "post-migration insert without arrays must get DEFAULT '{}'"
+        assert row[1] == [], "post-migration insert without arrays must get DEFAULT '{}'"
 
         # cancel_token backfilled for all watches
         cur.execute("SELECT cancel_token FROM watches WHERE cancel_token IS NULL")

@@ -20,7 +20,9 @@ import time
 from pathlib import Path
 
 _repo_root = Path(__file__).resolve().parent.parent.parent
+_tests_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_repo_root))
+sys.path.insert(0, str(_tests_dir))  # for db_guard
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("perf_seed")
@@ -54,10 +56,9 @@ def _loc_array_pg(i: int) -> str:
 def _seed_postgres(db_url: str, n_deaths: int, n_watches: int, drop: bool, explain: bool,
                    only: str | None) -> None:
     import psycopg2
+    from db_guard import assert_test_db_safe  # noqa: PLC0415
 
-    if "supabase" in db_url.lower() or "mortivox.com" in db_url.lower():
-        log.error("DATABASE_URL looks like production — aborting.")
-        sys.exit(1)
+    assert_test_db_safe(db_url)
 
     conn = psycopg2.connect(db_url)
     conn.autocommit = False
@@ -219,12 +220,13 @@ def main() -> None:
                         help="Run EXPLAIN ANALYZE after seeding (Postgres only)")
     args = parser.parse_args()
 
-    db_url = os.environ.get("DATABASE_URL")
+    from db_guard import resolve_test_db_url  # noqa: PLC0415
+    db_url = resolve_test_db_url()
     if db_url:
         _seed_postgres(db_url, args.deaths_count, args.watches_count,
                        args.drop, args.explain, args.only)
     else:
-        log.warning("DATABASE_URL not set — falling back to SQLite (no GIN arrays).")
+        log.warning("No test DB URL found — falling back to SQLite (no GIN arrays).")
         _seed_sqlite(args.deaths_count, args.watches_count)
 
     log.info("Seed complete.")

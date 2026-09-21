@@ -14,18 +14,23 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ — for db_guard
 
 
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    from app.db import USE_POSTGRES, init_db
+    from app.db import DATABASE_URL, USE_POSTGRES, init_db
+    if USE_POSTGRES:
+        # Guard before any write: DATABASE_URL must be a local test database.
+        from db_guard import assert_test_db_safe  # noqa: PLC0415
+        assert_test_db_safe(DATABASE_URL)
     init_db()
     if USE_POSTGRES:
         # In CI all tests share one Postgres instance; truncate for isolation.
-        from app.db import _exec, get_conn
+        from app.db import _exec, get_conn  # noqa: PLC0415
         with get_conn() as conn:
             for tbl in ("watches", "deaths", "monitored_titles", "watcher_health"):
                 _exec(conn, f"TRUNCATE {tbl} RESTART IDENTITY CASCADE")
