@@ -434,21 +434,48 @@ def test_seo019_twitter_card_present(path):
 
 # ── SEO-020: google-site-verification no HTML (xfail — ausente) ─────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="google-site-verification ausente no HTML: a tag meta não é injetada "
-           "pelo servidor. A verificação de Domínio funciona via DNS TXT (presente), "
-           "mas a verificação de Prefixo de URL requer a meta tag no HTML. "
-           "Impacto: Search Console só pode ser configurado como Domínio, não URL Prefix.",
-)
-def test_seo020_google_site_verification_in_html():
-    """HTML da home deve conter meta google-site-verification para URL Prefix property."""
-    r = client_follow.get("/")
-    assert r.status_code == 200
-    assert "google-site-verification" in r.text, (
-        "Meta tag google-site-verification ausente no HTML. "
-        "Adicionar via GOOGLE_SITE_VERIFICATION env var ou hardcoded em layout()."
-    )
+def test_seo020_google_site_verification_injected_when_env_set(monkeypatch):
+    """Se GOOGLE_SITE_VERIFICATION estiver configurada, a meta tag deve aparecer
+    no HTML de todas as páginas. Sem a env var, a tag deve estar ausente (não expõe
+    token de verificação em staging/dev)."""
+    import importlib
+
+    token = "test-verification-token-123"
+    monkeypatch.setenv("GOOGLE_SITE_VERIFICATION", token)
+
+    # Reimporta app.main para que o módulo leia a nova env var
+    import app.main as main_mod
+    original = main_mod.GOOGLE_SITE_VERIFICATION
+    main_mod.GOOGLE_SITE_VERIFICATION = token
+    try:
+        r = client_follow.get("/")
+        assert r.status_code == 200
+        assert "google-site-verification" in r.text, (
+            "Meta tag google-site-verification não injetada quando env var está definida"
+        )
+        assert token in r.text, (
+            f"Token {token!r} não encontrado no HTML"
+        )
+    finally:
+        main_mod.GOOGLE_SITE_VERIFICATION = original
+
+
+def test_seo020_google_site_verification_absent_when_env_unset():
+    """Sem GOOGLE_SITE_VERIFICATION, a meta tag não deve aparecer no HTML."""
+    import app.main as main_mod
+    original = main_mod.GOOGLE_SITE_VERIFICATION
+    main_mod.GOOGLE_SITE_VERIFICATION = ""
+    try:
+        r = client_follow.get("/")
+        assert r.status_code == 200
+        # A meta tag não deve aparecer quando env var não está definida
+        # (evita vazar token antigo ou expor meta vazia)
+        empty_tag = 'name="google-site-verification" content=""'
+        assert empty_tag not in r.text, (
+            "Meta google-site-verification com conteúdo vazio no HTML"
+        )
+    finally:
+        main_mod.GOOGLE_SITE_VERIFICATION = original
 
 
 # ── SEO-021 a SEO-023: @live ─────────────────────────────────────────────────

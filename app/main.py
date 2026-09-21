@@ -76,6 +76,12 @@ app.add_middleware(
 # not user input and not an XSS vector from the public.
 ANALYTICS_HEAD_SNIPPET = os.environ.get("ANALYTICS_HEAD_SNIPPET", "").strip()
 
+# Google Search Console URL-prefix verification. Set this to the token from
+# the "HTML tag" method in Search Console so the meta tag is injected into
+# every page's <head>. The DNS TXT method (Domain property) works without this,
+# but the URL-prefix property requires the meta tag.
+GOOGLE_SITE_VERIFICATION = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip()
+
 # How stale the watcher's last heartbeat can be before /status flags it.
 # GitHub Actions runs the watcher hourly, so 2h30 gives room for one missed run.
 WATCHER_STALE_HOURS = 2.5
@@ -250,6 +256,7 @@ def layout(request: Request, title: str, description: str, body: str, canonical_
   <meta name="twitter:title" content="{e(title)}">
   <meta name="twitter:description" content="{e(description)}">
   <meta name="twitter:image" content="{e(image_url)}">
+  {f'<meta name="google-site-verification" content="{e(GOOGLE_SITE_VERIFICATION)}">' if GOOGLE_SITE_VERIFICATION else ""}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
