@@ -1,6 +1,6 @@
 # Estado do Orquestrador — Mortivox
 
-Atualizado: 2026-09-20
+Atualizado: 2026-09-21
 
 ## Ambiente
 
@@ -33,12 +33,31 @@ gh auth login --scopes repo,workflow
 | 5. Search Console e indexação | qa/f5-search-console | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f5-search-console) | ENTREGUE | 173 pass, 12 skip, 36 xfail; GOOGLE_SITE_VERIFICATION env var; search-console.md |
 | 6. Verificação independente e relatório | qa/f6-relatorio | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f6-relatorio) | ENTREGUE | relatorio-final.md gerado; 0 testes vazios; 3 execuções sem flakiness |
 
+## PRs de implementação (criados em 2026-09-21)
+
+| PR | Branch | Base | Commit | Status |
+|---|---|---|---|---|
+| PR 1 | fix/email-bugs | qa/f6-relatorio | a9178d8 | **PRONTO — aguarda `gh auth login` para criar PR no GitHub** |
+| PR 2 | feat/filtros-enriquecimento | fix/email-bugs | 3c11279 | **PRONTO — aguarda `gh auth login`** |
+| PR 3 | feat/filtros-ui | feat/filtros-enriquecimento | 3fcbe31 | **PRONTO — aguarda `gh auth login`** |
+| PR 4 | feat/paginas-nicho | feat/filtros-ui | a6063c9 | **PRONTO — aguarda `gh auth login`** |
+
+Para criar os PRs após autenticar o gh CLI:
+```powershell
+cd "C:\IA\obituary-watch"
+gh pr create --draft --base qa/f6-relatorio --head fix/email-bugs --title "fix: EML-002 wikitext in email, ADV-004 XSS, INT-003 cancelled subscriber"
+gh pr create --draft --base fix/email-bugs --head feat/filtros-enriquecimento --title "feat: filters enrichment — schema migration, filters.py, wikidata fixtures"
+gh pr create --draft --base feat/filtros-enriquecimento --head feat/filtros-ui --title "feat: filter subscription UI, /subscribe/filter, /api/filters endpoints"
+gh pr create --draft --base feat/filtros-ui --head feat/paginas-nicho --title "feat: nicho pages /occupation/{qid} and /location/{qid}, sitemap update"
+```
+
 ## Pendências humanas (Michel)
 
-- [ ] **gh auth login --scopes repo,workflow** — para push e PRs via CLI
+- [ ] **gh auth login --scopes repo,workflow** — para criar PRs via CLI (comandos acima)
 - [ ] **Search Console**: qual o erro exato? Tipo de propriedade (Domínio ou Prefixo de URL)? Método de verificação tentado?
 - [ ] **Banco de teste Postgres**: Docker não disponível. Pode instalar Docker Desktop ou criar segundo projeto Supabase de teste?
 - [ ] **E2E local BLOQUEADO** — WinError 10106 impede uvicorn em subprocess; testes e2e só rodam no CI (Linux). Não precisa de ação imediata.
+- [ ] **SPF DNS**: adicionar `v=spf1 include:spf.resend.com ~all` no DNS do mortivox.com para evitar rejeição de email.
 
 ## Comandos que funcionam no PowerShell (C:\IA\obituary-watch)
 
