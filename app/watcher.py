@@ -24,6 +24,7 @@ from app.db import (
     record_watcher_start,
 )
 from app.email import send_death_notification as send_death_email
+from app.filters import enrich_death
 from app.observability import setup_logging, setup_sentry
 
 setup_logging()
@@ -154,6 +155,7 @@ def run():
                 is_new = record_death(title, display_name, death_date, edit_url)
                 if is_new:
                     log.info(f"DEATH DETECTED: {display_name} — {death_date}")
+                    enrich_death(title)
                     emails = get_emails_for(title)
                     wiki_url = f"https://en.wikipedia.org/wiki/{title}"
                     sent = 0

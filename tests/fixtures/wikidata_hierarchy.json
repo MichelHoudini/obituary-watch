@@ -1,0 +1,25 @@
+{
+  "graph": {
+    "Q18419":      {"P131": ["Q60"]},
+    "Q60":         {"P131": ["Q1384"]},
+    "Q1384":       {"P131": ["Q30"]},
+    "Q30":         {"P131": []},
+    "Q639669":     {"P279": ["Q177220"]},
+    "Q177220":     {"P279": ["Q488205"]},
+    "Q488205":     {"P279": []},
+    "Q1607826":    {"P279": ["Q177220"]},
+    "Q486748":     {"P279": ["Q177220"]},
+    "Q16557":      {"P131": ["Q1439"]},
+    "Q1439":       {"P131": ["Q30"]},
+    "Q42":         {"P131": []},
+    "Q_CYCLE_TEST": {"P131": ["Q_CYCLE_A"]},
+    "Q_CYCLE_A":   {"P131": ["Q_CYCLE_B"]},
+    "Q_CYCLE_B":   {"P131": ["Q_CYCLE_A"]}
+  },
+  "entities": {
+    "Q_NO_OCCUPATION_FIXTURE":  {"occupation_qids": [],                                                          "location_qids": ["Q30"]},
+    "Q_NO_LOCATION_FIXTURE":    {"occupation_qids": ["Q177220"],                                                  "location_qids": []},
+    "Q_TEN_OCCUPATIONS_FIXTURE":{"occupation_qids": ["Q1","Q2","Q3","Q4","Q5","Q6","Q7","Q8","Q9","Q10","Q11"], "location_qids": []},
+    "Q_NO_P131_FIXTURE":        {"occupation_qids": [],                                                          "location_qids": ["Q42"]}
+  }
+}

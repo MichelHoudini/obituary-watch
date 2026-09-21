@@ -3,6 +3,7 @@ db.py - Database layer using PostgreSQL (Supabase/Render-compatible).
 Falls back to SQLite for local development if DATABASE_URL is not set.
 """
 
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -77,15 +78,33 @@ def _ph():
     return "%s" if USE_POSTGRES else "?"
 
 
+def _encode_qids(qids: list[str]) -> str:
+    return json.dumps(qids)
+
+
+def _decode_qids(val) -> list[str]:
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    try:
+        result = json.loads(val)
+        return result if isinstance(result, list) else []
+    except Exception:
+        return []
+
+
 def init_db():
     with get_conn() as conn:
         if USE_POSTGRES:
             _exec(conn, """
                 CREATE TABLE IF NOT EXISTS watches (
-                    id         SERIAL PRIMARY KEY,
-                    wiki_title TEXT NOT NULL,
-                    email      TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
+                    id                    SERIAL PRIMARY KEY,
+                    wiki_title            TEXT NOT NULL,
+                    email                 TEXT NOT NULL,
+                    created_at            TEXT NOT NULL,
+                    filter_occupation_qid TEXT,
+                    filter_location_qid   TEXT,
                     UNIQUE(wiki_title, email)
                 )
             """)
@@ -101,13 +120,15 @@ def init_db():
             """)
             _exec(conn, """
                 CREATE TABLE IF NOT EXISTS deaths (
-                    id           SERIAL PRIMARY KEY,
-                    wiki_title   TEXT UNIQUE NOT NULL,
-                    display_name TEXT NOT NULL,
-                    death_date   TEXT,
-                    detected_at  TEXT NOT NULL,
-                    wiki_url     TEXT NOT NULL,
-                    edit_url     TEXT
+                    id               SERIAL PRIMARY KEY,
+                    wiki_title       TEXT UNIQUE NOT NULL,
+                    display_name     TEXT NOT NULL,
+                    death_date       TEXT,
+                    detected_at      TEXT NOT NULL,
+                    wiki_url         TEXT NOT NULL,
+                    edit_url         TEXT,
+                    occupation_qids  TEXT DEFAULT '[]',
+                    location_qids    TEXT DEFAULT '[]'
                 )
             """)
             _exec(conn, """
@@ -124,10 +145,12 @@ def init_db():
         else:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS watches (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    wiki_title  TEXT NOT NULL,
-                    email       TEXT NOT NULL,
-                    created_at  TEXT NOT NULL,
+                    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    wiki_title            TEXT NOT NULL,
+                    email                 TEXT NOT NULL,
+                    created_at            TEXT NOT NULL,
+                    filter_occupation_qid TEXT,
+                    filter_location_qid   TEXT,
                     UNIQUE(wiki_title, email)
                 );
                 CREATE TABLE IF NOT EXISTS monitored_titles (
@@ -139,13 +162,15 @@ def init_db():
                     created_at   TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS deaths (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    wiki_title   TEXT UNIQUE NOT NULL,
-                    display_name TEXT NOT NULL,
-                    death_date   TEXT,
-                    detected_at  TEXT NOT NULL,
-                    wiki_url     TEXT NOT NULL,
-                    edit_url     TEXT
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    wiki_title       TEXT UNIQUE NOT NULL,
+                    display_name     TEXT NOT NULL,
+                    death_date       TEXT,
+                    detected_at      TEXT NOT NULL,
+                    wiki_url         TEXT NOT NULL,
+                    edit_url         TEXT,
+                    occupation_qids  TEXT DEFAULT '[]',
+                    location_qids    TEXT DEFAULT '[]'
                 );
                 CREATE TABLE IF NOT EXISTS watcher_health (
                     key                 TEXT PRIMARY KEY,
@@ -218,24 +243,30 @@ def seed_watched(titles: list[dict]) -> None:
                     birth_year = COALESCE(excluded.birth_year, monitored_titles.birth_year)
             """, rows)
 
-def add_watch(wiki_title: str, email: str) -> bool:
+def add_watch(
+    wiki_title: str,
+    email: str,
+    filter_occupation_qid: str | None = None,
+    filter_location_qid: str | None = None,
+) -> bool:
     wiki_title = wiki_title.strip().replace(" ", "_")
     email = email.strip().lower()
-    add_watched(wiki_title, wiki_title.replace("_", " "), "User-monitored page", None)
+    if wiki_title:
+        add_watched(wiki_title, wiki_title.replace("_", " "), "User-monitored page", None)
     with get_conn() as conn:
         if USE_POSTGRES:
             cur = _exec(conn, """
-                INSERT INTO watches (wiki_title, email, created_at)
-                VALUES (%s, %s, %s)
+                INSERT INTO watches (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (wiki_title, email) DO NOTHING
                 RETURNING id
-            """, (wiki_title, email, utcnow()))
+            """, (wiki_title, email, utcnow(), filter_occupation_qid, filter_location_qid))
             return _fetchone(cur) is not None
         else:
             cur = _exec(conn, """
-                INSERT OR IGNORE INTO watches (wiki_title, email, created_at)
-                VALUES (?, ?, ?)
-            """, (wiki_title, email, utcnow()))
+                INSERT OR IGNORE INTO watches (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid)
+                VALUES (?, ?, ?, ?, ?)
+            """, (wiki_title, email, utcnow(), filter_occupation_qid, filter_location_qid))
             return cur.rowcount > 0
 
 
@@ -290,6 +321,17 @@ def get_watch_count_for_title(wiki_title: str) -> int:
         cur = _exec(conn, f"SELECT COUNT(DISTINCT email) AS n FROM watches WHERE wiki_title={ph}", (wiki_title,))
         row = _fetchone(cur)
     return row["n"] if row else 0
+
+
+def get_filter_watches() -> list[dict]:
+    """Return all watches that have at least one filter QID set."""
+    with get_conn() as conn:
+        cur = _exec(conn, """
+            SELECT * FROM watches
+            WHERE filter_occupation_qid IS NOT NULL
+               OR filter_location_qid   IS NOT NULL
+        """)
+        return _fetchall(cur)
 
 
 def get_watch_counts() -> dict:
@@ -383,6 +425,48 @@ def get_death_count() -> int:
         cur = _exec(conn, "SELECT COUNT(*) AS n FROM deaths")
         row = _fetchone(cur)
     return row["n"] if row else 0
+
+
+def update_death_enrichment(wiki_title: str, occupation_qids: list, location_qids: list) -> None:
+    """Persist Wikidata ancestor arrays to an existing deaths row.
+    No-op if wiki_title is not in the deaths table."""
+    enc_occ = _encode_qids(occupation_qids)
+    enc_loc = _encode_qids(location_qids)
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn,
+              f"UPDATE deaths SET occupation_qids={ph}, location_qids={ph} WHERE wiki_title={ph}",
+              (enc_occ, enc_loc, wiki_title))
+
+
+def get_death_with_enrichment(wiki_title: str) -> dict | None:
+    """Return a deaths row with occupation_qids/location_qids decoded to lists."""
+    row = get_death_for_title(wiki_title)
+    if row is None:
+        return None
+    row = dict(row)
+    row["occupation_qids"] = _decode_qids(row.get("occupation_qids"))
+    row["location_qids"]   = _decode_qids(row.get("location_qids"))
+    return row
+
+
+def migrate_schema() -> None:
+    """Add new columns to existing databases that pre-date this schema version.
+    Safe to call on every startup: ALTER TABLE ... ADD COLUMN is a no-op if the
+    column already exists (SQLite) or raises a benign duplicate-column error
+    (Postgres) that we swallow."""
+    columns = [
+        ("watches", "filter_occupation_qid", "TEXT"),
+        ("watches", "filter_location_qid",   "TEXT"),
+        ("deaths",  "occupation_qids",        "TEXT DEFAULT '[]'"),
+        ("deaths",  "location_qids",          "TEXT DEFAULT '[]'"),
+    ]
+    with get_conn() as conn:
+        for table, col, col_def in columns:
+            try:
+                _exec(conn, f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+            except Exception:
+                pass  # column already exists — ignore
 
 
 # ── Watcher healthcheck ──────────────────────────────────────────────────────
