@@ -28,3 +28,8 @@ Atualizado: 2026-09-20
 | 2026-09-20 | Testes de filtros marcados xfail(strict=True) enquanto filtros AUSENTES | Filtros não implementados; tests escritos contra contrato futuro | obrigatório (ORQUESTRADOR.md) |
 | 2026-09-20 | Wikipedia/Wikidata em testes: fixtures JSON versionadas | IPs da Render/GitHub Actions podem ser bloqueados; evitar chamadas reais no CI | obrigatório (ORQUESTRADOR.md) |
 | 2026-09-20 | Testes @live fora do CI bloqueante | Chamadas reais à Wikipedia/Wikidata/Resend não podem quebrar CI | obrigatório (ORQUESTRADOR.md) |
+| 2026-09-20 | Cobertura mínima: nunca abaixo de 51% (baseline Fase 0); módulos novos >= 90% | Proteção de regressão + qualidade de módulos novos | padrão, Michel pode trocar |
+| 2026-09-20 | IDs de teste estáveis: UNI-, INT-, E2E-, ADV-, SEG-, PERF-, EML-, SEO- | Rastreabilidade risco→teste no relatório final | obrigatório (ORQUESTRADOR.md) |
+| 2026-09-20 | Profundidade máxima de hierarquia Wikidata: 10 níveis para P279 e P131 | Evita loop infinito em grafos com ciclos; Wikidata tem profundidades típicas < 5 | padrão, Michel pode trocar |
+| 2026-09-20 | Conteúdo mínimo para indexação de página de nicho: >= 5 mortes reais listadas | Evita milhares de páginas rasas; configurável em env var | padrão, Michel pode trocar |
+| 2026-09-20 | Host canônico: https://mortivox.com/ (apex, sem www) | www e http já redirecionam 301 para este host | confirmado (Fase 0) |

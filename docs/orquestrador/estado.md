@@ -25,8 +25,8 @@ gh auth login --scopes repo,workflow
 
 | Fase | Branch | PR | Status | Observações |
 |---|---|---|---|---|
-| 0. Reconhecimento | qa/f0-reconhecimento | — | ENTREGUE | Baseline registrado, achados documentados |
-| 1. Plano e contrato | qa/f1-plano | — | PENDENTE | — |
+| 0. Reconhecimento | qa/f0-reconhecimento | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f0-reconhecimento) | ENTREGUE | Baseline registrado; gh sem auth, PR manual |
+| 1. Plano e contrato | qa/f1-plano | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f1-plano) | ENTREGUE | Plano, contrato filtros, decisões |
 | 2. Unidade e integração | qa/f2-unidade-integracao | — | PENDENTE | — |
 | 3. Sistema (e2e, email, adversarial, perf) | qa/f3-sistema | — | PENDENTE | — |
 | 4. Portão técnico de SEO | qa/f4-seo | — | PENDENTE | — |
