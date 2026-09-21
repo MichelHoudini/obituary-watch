@@ -622,11 +622,169 @@ def get_death_with_enrichment(wiki_title: str) -> dict | None:
 
 
 def migrate_schema() -> None:
-    """Additive, idempotent schema migration.
-    Safe to call on every startup.  Swallows duplicate-column errors."""
-    import secrets
+    """Idempotent, additive schema migration. Safe to call on every startup.
 
-    # ── Step 1: ADD COLUMN — both Postgres and SQLite ────────────────────────
+    Each step runs in its own transaction; a failure in one step does not
+    abort the others.  On Postgres, holds pg_advisory_lock(987654321) for
+    the duration so two app instances starting simultaneously do not race.
+    """
+    if not USE_POSTGRES:
+        _migrate_schema_sqlite()
+        return
+
+    import psycopg2
+
+    lock_conn = psycopg2.connect(DATABASE_URL)
+    lock_conn.autocommit = True
+    try:
+        lock_conn.cursor().execute("SELECT pg_advisory_lock(987654321)")
+    except Exception as exc:
+        lock_conn.close()
+        raise RuntimeError(f"migrate_schema: advisory lock failed: {exc}") from exc
+
+    try:
+        _migrate_schema_postgres()
+    finally:
+        try:
+            lock_conn.cursor().execute("SELECT pg_advisory_unlock(987654321)")
+        except Exception:
+            pass
+        lock_conn.close()
+
+
+def _pg_col_udt(conn, table: str, col: str) -> str | None:
+    """Return udt_name for a Postgres column ('text', '_text', …) or None."""
+    cur = _exec(conn, """
+        SELECT udt_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
+    """, (table, col))
+    row = _fetchone(cur)
+    return row["udt_name"] if row else None
+
+
+def _pg_col_has_unique(conn, table: str, col: str) -> bool:
+    """Return True if the column already carries a UNIQUE constraint."""
+    cur = _exec(conn, """
+        SELECT 1
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema    = kcu.table_schema
+        WHERE tc.table_schema    = 'public'
+          AND tc.table_name      = %s
+          AND tc.constraint_type = 'UNIQUE'
+          AND kcu.column_name    = %s
+        LIMIT 1
+    """, (table, col))
+    return _fetchone(cur) is not None
+
+
+def _migrate_schema_postgres() -> None:
+    import secrets as _sec
+    errors: list[str] = []
+
+    # ── Step 1: ADD COLUMN IF NOT EXISTS (one transaction per column) ────────
+    columns = [
+        ("watches", "filter_occupation_qid", "TEXT"),
+        ("watches", "filter_location_qid",   "TEXT"),
+        ("watches", "cancel_token",          "TEXT"),
+        ("deaths",  "occupation_qids",        "TEXT DEFAULT '[]'"),
+        ("deaths",  "location_qids",          "TEXT DEFAULT '[]'"),
+        ("deaths",  "wiki_qid",               "TEXT"),
+    ]
+    for table, col, col_def in columns:
+        try:
+            with get_conn() as conn:
+                _exec(conn, f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_def}")
+        except Exception as exc:
+            step = f"ADD {table}.{col}"
+            log.error("migrate_schema: %s failed: %r", step, exc)
+            errors.append(step)
+
+    # ── Step 2: Convert TEXT → TEXT[] only when column is still plain TEXT ───
+    for col in ("occupation_qids", "location_qids"):
+        try:
+            with get_conn() as conn:
+                udt = _pg_col_udt(conn, "deaths", col)
+                if udt == "text":
+                    _exec(conn, f"""
+                        ALTER TABLE deaths ALTER COLUMN {col}
+                        TYPE TEXT[]
+                        USING CASE
+                            WHEN {col} IS NULL OR trim({col}) IN ('', '[]')
+                                THEN ARRAY[]::TEXT[]
+                            ELSE ARRAY(SELECT json_array_elements_text({col}::json))::TEXT[]
+                        END
+                    """)
+                    log.info("migrate_schema: deaths.%s TEXT → TEXT[] done", col)
+        except Exception as exc:
+            step = f"TYPE deaths.{col}"
+            log.error("migrate_schema: %s failed: %r", step, exc)
+            errors.append(step)
+
+    # ── Step 3: Set TEXT[] defaults ──────────────────────────────────────────
+    for col in ("occupation_qids", "location_qids"):
+        try:
+            with get_conn() as conn:
+                if _pg_col_udt(conn, "deaths", col) == "_text":
+                    _exec(conn,
+                          f"ALTER TABLE deaths ALTER COLUMN {col} SET DEFAULT '{{}}'::TEXT[]")
+        except Exception as exc:
+            log.warning("migrate_schema: DEFAULT %s non-critical: %r", col, exc)
+
+    # ── Step 4: GIN indexes and unique index on wiki_qid ─────────────────────
+    index_stmts = [
+        "CREATE INDEX IF NOT EXISTS idx_deaths_occupation_qids ON deaths USING GIN (occupation_qids)",
+        "CREATE INDEX IF NOT EXISTS idx_deaths_location_qids   ON deaths USING GIN (location_qids)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_deaths_wiki_qid ON deaths (wiki_qid) WHERE wiki_qid IS NOT NULL",
+    ]
+    for stmt in index_stmts:
+        try:
+            with get_conn() as conn:
+                _exec(conn, stmt)
+        except Exception as exc:
+            step = f"INDEX: {stmt.split('EXISTS')[1].split('ON')[0].strip()}"
+            log.error("migrate_schema: %s failed: %r", step, exc)
+            errors.append(step)
+
+    # ── Step 5: Unique index on cancel_token (legacy schema only) ────────────
+    try:
+        with get_conn() as conn:
+            if not _pg_col_has_unique(conn, "watches", "cancel_token"):
+                _exec(conn, """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_watches_cancel_token
+                    ON watches (cancel_token)
+                    WHERE cancel_token IS NOT NULL
+                """)
+    except Exception as exc:
+        log.warning("migrate_schema: UNIQUE cancel_token non-critical: %r", exc)
+
+    # ── Step 6: Backfill cancel_token for NULL rows ───────────────────────────
+    try:
+        with get_conn() as conn:
+            cur = _exec(conn, "SELECT id FROM watches WHERE cancel_token IS NULL")
+            rows = _fetchall(cur)
+        for row in rows:
+            token = _sec.token_urlsafe(32)
+            with get_conn() as conn:
+                _exec(conn,
+                      "UPDATE watches SET cancel_token = %s WHERE id = %s AND cancel_token IS NULL",
+                      (token, row["id"]))
+        if rows:
+            log.info("migrate_schema: backfilled cancel_token for %d watches", len(rows))
+    except Exception as exc:
+        step = "BACKFILL cancel_token"
+        log.error("migrate_schema: %s failed: %r", step, exc)
+        errors.append(step)
+
+    if errors:
+        log.warning("migrate_schema: %d step(s) had errors: %s", len(errors), "; ".join(errors))
+
+
+def _migrate_schema_sqlite() -> None:
+    """SQLite migration: add missing columns and backfill cancel_token."""
+    import secrets as _sec
+
     columns = [
         ("watches", "filter_occupation_qid", "TEXT"),
         ("watches", "filter_location_qid",   "TEXT"),
@@ -637,58 +795,21 @@ def migrate_schema() -> None:
     ]
     with get_conn() as conn:
         for table, col, col_def in columns:
-            try:
-                _exec(conn, f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
-            except Exception:
-                pass  # column already exists — ignore
+            cur = conn.execute(f"PRAGMA table_info({table})")
+            existing = {r[1] for r in cur.fetchall()}
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
 
-    # ── Step 2: Postgres-only — convert TEXT to TEXT[], add indexes ───────────
-    if USE_POSTGRES:
-        with get_conn() as conn:
-            # Convert JSON-string columns to native TEXT[] if still TEXT type
-            for col in ("occupation_qids", "location_qids"):
-                try:
-                    _exec(conn, f"""
-                        ALTER TABLE deaths
-                        ALTER COLUMN {col}
-                        TYPE TEXT[] USING {col}::jsonb::text[]
-                    """)
-                except Exception:
-                    pass  # already TEXT[] — ignore
-            # Set native array defaults
-            try:
-                _exec(conn, "ALTER TABLE deaths ALTER COLUMN occupation_qids SET DEFAULT '{}'")
-                _exec(conn, "ALTER TABLE deaths ALTER COLUMN location_qids SET DEFAULT '{}'")
-            except Exception:
-                pass
-            # GIN indexes for array containment
-            _exec(conn, """
-                CREATE INDEX IF NOT EXISTS idx_deaths_occupation_qids
-                ON deaths USING GIN (occupation_qids)
-            """)
-            _exec(conn, """
-                CREATE INDEX IF NOT EXISTS idx_deaths_location_qids
-                ON deaths USING GIN (location_qids)
-            """)
-            # Unique index on wiki_qid (partial — ignores NULLs)
-            _exec(conn, """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_deaths_wiki_qid
-                ON deaths (wiki_qid)
-                WHERE wiki_qid IS NOT NULL
-            """)
-
-    # ── Step 3: Backfill cancel_token for existing watches with NULL token ────
     with get_conn() as conn:
-        ph = _ph()
-        cur = _exec(conn, "SELECT id FROM watches WHERE cancel_token IS NULL")
-        rows = _fetchall(cur)
-    for row in rows:
-        token = secrets.token_urlsafe(32)
+        cur = conn.execute("SELECT id FROM watches WHERE cancel_token IS NULL")
+        ids = [r[0] for r in cur.fetchall()]
+    for row_id in ids:
+        token = _sec.token_urlsafe(32)
         with get_conn() as conn:
-            ph = _ph()
-            _exec(conn,
-                  f"UPDATE watches SET cancel_token={ph} WHERE id={ph} AND cancel_token IS NULL",
-                  (token, row["id"]))
+            conn.execute(
+                "UPDATE watches SET cancel_token = ? WHERE id = ? AND cancel_token IS NULL",
+                (token, row_id),
+            )
 
 
 # ── Watcher healthcheck ──────────────────────────────────────────────────────

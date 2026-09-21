@@ -46,6 +46,7 @@ gh auth login --scopes repo,workflow
 | PR 6 | fix/tokens-e-email-headers | feat/ingestao-global | 03806dc | PRONTO — 235 pass, 7 xfail→pass |
 | PR 7 | fix/schema-e-consistencia | fix/tokens-e-email-headers | 2563d91 | PRONTO — 250 pass, CONF/ING/ADV novos testes |
 | PR 8 | fix/perf-ci-backfill | fix/schema-e-consistencia | d876b97 | PRONTO — 250 pass local; 11 skip esperado no CI |
+| PR #18 (consolidado) | fix/perf-ci-backfill | master | pendente push | EM ANDAMENTO — CI fix implementado, aguardando push |
 
 Para criar os PRs após autenticar o gh CLI:
 ```powershell
@@ -60,6 +61,35 @@ gh pr create --draft --base feat/ingestao-global --head fix/tokens-e-email-heade
 gh pr create --draft --base fix/tokens-e-email-headers --head fix/schema-e-consistencia --title "fix: schema TEXT[], GIN index, is_confirmed_death, safe ingestor, Postgres CI"
 gh pr create --draft --base fix/schema-e-consistencia --head fix/perf-ci-backfill --title "fix: PERF-004 CI, seed 300k, backfill janelas reais + resume, run_window"
 ```
+
+## CI Fix — PR #18 (2026-09-21)
+
+### Causa raiz do job quality vermelho
+
+1. **`migrate_schema()` não idempotente**: todos os `ALTER TABLE ADD COLUMN` estavam em uma única transação Postgres. Quando o primeiro ALTER falhava (coluna já existe pós `init_db()`), a transação entrava em estado abortado e todos os comandos seguintes falhavam com `InFailedSqlTransaction`, incluindo o `conn.commit()`.
+2. **Conversão `TEXT → TEXT[]` com cast errado**: usava `{col}::jsonb::text[]` que falha se a coluna já é `TEXT[]`.
+3. **Health check com usuário errado**: `pg_isready` sem `-U` usava `root` (o usuário do runner), gerando 5× `FATAL: role "root" does not exist` no log.
+
+### Arquivos alterados
+
+| Arquivo | Mudança |
+|---|---|
+| `app/db.py` | `migrate_schema()` reescrita: cada passo em transação própria, `ADD COLUMN IF NOT EXISTS`, converte `TEXT→TEXT[]` só quando `udt_name = 'text'`, `pg_advisory_lock(987654321)` para concorrência |
+| `.github/workflows/ci.yml` | `--health-cmd "pg_isready -U mortivox"` |
+| `tests/fixtures/schema_producao.sql` | Schema legado de produção (origin/master) para testes MIG-002+ |
+| `tests/test_migration.py` | Testes MIG-001 a MIG-005 contra Postgres real (skip automático sem DATABASE_URL) |
+
+### Testes de migração esperados no CI
+
+| Teste | Cenário |
+|---|---|
+| MIG-001 | DB limpo — init_db + migrate_schema×2, sem erro |
+| MIG-002 | Schema legado com dados reais — migrar e verificar TEXT[], backfill, segunda rodada é no-op |
+| MIG-003 | Estado parcial (1 coluna já existe) — migração completa o resto |
+| MIG-004 | 2 threads simultâneos — nenhum erro, nenhum token duplicado |
+| MIG-005 | JSON inválido em `occupation_qids` — TYPE step falha isolado, outros passos completam |
+
+---
 
 ## Análise dos 12 testes skipped (local e CI)
 
