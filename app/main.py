@@ -248,6 +248,7 @@ def nav() -> str:
       <div class="nav-links">
         <a href="/people">people</a>
         <a href="/deaths">deaths</a>
+                <a href="/subscribe/filter">filter by profession/region</a>
         <a href="/lists/most-monitored">most monitored</a>
         <a href="/rss">rss</a>
       </div>
@@ -603,6 +604,7 @@ def index(request: Request):
     <img src="/skull.png?v=3" alt="mortivox" style="width:72px;height:72px;margin-bottom:28px;image-rendering:pixelated;">
     <h1>mortivox</h1>
     <p class="tagline">paste a wikipedia link. get notified the exact moment someone dies.</p>
+        <p style="margin-bottom:24px;font-size:14px;color:var(--mv-text-tertiary)">looking for a profession or a place instead of one person? <a href="/subscribe/filter" style="color:var(--mv-text-primary);text-decoration:underline">subscribe by filter →</a></p>
     <div class="input-group" id="step1">
       <input type="url" placeholder="https://en.wikipedia.org/wiki/..." id="wikiUrl" autocomplete="off">
       <button id="nextBtn">next →</button>
