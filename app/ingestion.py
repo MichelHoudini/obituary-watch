@@ -322,7 +322,15 @@ def _run_candidates(
             if is_new:
                 summary["inserted"] += 1
                 log.info("Ingested: %s (%s) died %s", wiki_title, qid, death_date)
-                enrich_death(wiki_title)
+                enrichment = enrich_death(wiki_title)
+                if not dry_run:
+                    _notify_filter_subscribers(
+                        wiki_title=wiki_title,
+                        display_name=cand["display_name"],
+                        death_date=death_date,
+                        wiki_url=wiki_url,
+                        enrichment=enrichment,
+                    )
 
             if not _OFFLINE_MODE:
                 time.sleep(BATCH_SLEEP_SECONDS)
@@ -331,6 +339,43 @@ def _run_candidates(
             summary["errors"] += 1
 
     return summary
+
+
+def _notify_filter_subscribers(
+    wiki_title: str,
+    display_name: str,
+    death_date: str | None,
+    wiki_url: str,
+    enrichment: dict,
+) -> None:
+    """Send death notification emails to matching filter subscribers.
+
+    Person-specific subscribers are NOT notified here (the watcher handles those
+    for watched titles; ingestor only processes non-watched titles).
+    """
+    try:
+        from app.email import send_death_notification  # noqa: PLC0415
+        from app.filters import get_notifiable_emails_for_death  # noqa: PLC0415
+
+        death_record = {
+            "occupation_qids": enrichment.get("occupation_qids", []),
+            "location_qids":   enrichment.get("location_qids", []),
+            "death_date":      death_date,
+        }
+        notifiable = get_notifiable_emails_for_death(wiki_title, death_record)
+        for email in notifiable:
+            try:
+                send_death_notification(
+                    to_email=email,
+                    person_name=display_name,
+                    wiki_title=wiki_title,
+                    death_date=death_date or "",
+                    wiki_url=wiki_url,
+                )
+            except Exception as exc:
+                log.warning("Email failed for %s → %s: %s", wiki_title, email, exc)
+    except Exception as exc:
+        log.warning("Filter notification failed for %s: %s", wiki_title, exc)
 
 
 def _print_dry_run_sample(

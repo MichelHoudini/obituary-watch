@@ -1,6 +1,6 @@
 # Estado do Orquestrador — Mortivox
 
-Atualizado: 2026-09-21
+Atualizado: 2026-09-21 (sessão Codex review fixes)
 
 ## Ambiente
 
@@ -46,7 +46,7 @@ gh auth login --scopes repo,workflow
 | PR 6 | fix/tokens-e-email-headers | feat/ingestao-global | 03806dc | PRONTO — 235 pass, 7 xfail→pass |
 | PR 7 | fix/schema-e-consistencia | fix/tokens-e-email-headers | 2563d91 | PRONTO — 250 pass, CONF/ING/ADV novos testes |
 | PR 8 | fix/perf-ci-backfill | fix/schema-e-consistencia | d876b97 | PRONTO — 250 pass local; 11 skip esperado no CI |
-| PR #18 (consolidado) | fix/perf-ci-backfill | master | pendente push | EM ANDAMENTO — CI fix implementado, aguardando push |
+| PR #18 (consolidado) | fix/perf-ci-backfill | master | pendente push | EM ANDAMENTO — 5 problemas Codex corrigidos, 272 pass, aguardando push + gh auth |
 
 Para criar os PRs após autenticar o gh CLI:
 ```powershell
@@ -109,6 +109,66 @@ gh pr create --draft --base fix/schema-e-consistencia --head fix/perf-ci-backfil
 | 12 | `test_seo023_lighthouse_lcp_cls` | @live: Lighthouse CLI | Não — por design |
 
 **Resultado esperado no CI após merge do PR 8:** 11 skipped (PERF-004 passa → 1 skip a menos).
+
+## Sessão Codex review (2026-09-21) — Resultado
+
+### Contagem de testes após correções
+
+| Métrica | Antes da sessão | Após correções |
+|---|---|---|
+| passed | 264 | **272** |
+| skipped | 19 | 19 |
+| xfailed | 3 | 3 |
+| Novos testes adicionados | — | 8 (INT-040–044, CAN-001–007, e2e XSS+cancel) |
+
+### Os 5 problemas do Codex — diagnóstico final
+
+| # | Problema | Era real? | Resultado |
+|---|---|---|---|
+| 1 | App crashava se migração falhasse | **Já estava corrigido** | `migrate_schema()` captura erros por passo; `startup()` nunca propaga. Teste `test_startup_survives_failing_migration` PASS. |
+| 2 | Assinantes de filtro nunca recebiam email | **REAL** | **Corrigido.** `watcher.py` agora chama `get_notifiable_emails_for_death()`. `ingestion.py` agora chama `_notify_filter_subscribers()` após enriquecimento. Testes INT-040–044 PASS. |
+| 3 | `sseclient` e `httpx` ausentes no ingestor.yml | **REAL** | **Corrigido.** `sseclient-py httpx` adicionados ao `pip install` do `ingestor.yml`. Job `ingestor-smoke` adicionado ao `ci.yml`. |
+| 4 | XSS via innerHTML no autocomplete | **REAL** | **Corrigido.** `makeResultList()` reescrito para usar `textContent` em vez de `innerHTML`. Teste Playwright `test_xss_safe_autocomplete_label` PASS. |
+| 5 | `/cancel` e `/unsubscribe` retornavam 404 | **REAL** | **Corrigido.** Rotas GET+POST adicionadas em `main.py`. `/watch` agora gera e retorna `cancel_url`. `List-Unsubscribe-Post` usa endpoint POST correto. Testes CAN-001–007 PASS. |
+
+### Arquivos alterados nesta sessão
+
+| Arquivo | Mudança |
+|---|---|
+| `app/watcher.py` | Usa `get_notifiable_emails_for_death()` + `get_cancel_tokens_for_wiki()` |
+| `app/ingestion.py` | Adicionada `_notify_filter_subscribers()`, chamada após `enrich_death()` |
+| `app/main.py` | Rotas `/cancel` GET+POST e `/unsubscribe` GET+POST; `/watch` gera cancel_url; XSS fix |
+| `app/db.py` | Adicionadas `get_cancel_tokens_for_wiki()` e `get_or_create_cancel_token()` |
+| `.github/workflows/ingestor.yml` | `sseclient-py httpx` adicionados ao pip install |
+| `.github/workflows/ci.yml` | Job `ingestor-smoke` adicionado |
+| `tests/test_main.py` | Adicionado `test_startup_survives_failing_migration` |
+| `tests/test_filter_notification.py` | Novo arquivo — INT-040 a INT-044 |
+| `tests/test_cancel_routes.py` | Novo arquivo — CAN-001 a CAN-007 |
+| `tests/e2e/test_e2e.py` | Adicionados `test_xss_safe_autocomplete_label`, `test_cancel_page_returns_200`, `test_unsubscribe_page_returns_200` |
+| `docs/orquestrador/watcher.md` | Novo arquivo — arquitetura SSE, hibernação Render, enrich_death, watcher_is_stale, riscos |
+
+### Descrição PR #18 — seção "Riscos" para colar manualmente
+
+Cole isto no corpo do PR #18 no GitHub (pode editar via web mesmo sem gh CLI):
+
+```markdown
+## Riscos
+
+| Risco | Severidade | Status |
+|---|---|---|
+| **Filtros de assinatura nunca recebiam email** — watcher chamava `get_emails_for` em vez de `get_notifiable_emails_for_death` | Alta | **Corrigido neste PR** |
+| **Ingestor também não enviava emails de filtro** — caminho de ingestão global não chamava `_notify_filter_subscribers` | Alta | **Corrigido neste PR** |
+| **`/cancel` e `/unsubscribe` retornavam 404** — links nos emails eram quebrados | Alta | **Corrigido neste PR** |
+| **XSS via autocomplete** — `makeResultList()` usava `innerHTML` com dados não sanitizados do Wikidata | Média | **Corrigido neste PR** |
+| **`sseclient` e `httpx` ausentes no ingestor.yml** — deploy CI do ingestor quebrava silenciosamente | Média | **Corrigido neste PR** |
+| Enriquecimento Wikidata indisponível → arrays vazios → filtros não notificam para aquela morte | Média | Conhecido; sem retry. Arrays vazios são o resultado silencioso. |
+| Cota GitHub Actions esgotada ou job pulado → sem heartbeat → `watcher_is_stale=true` sem alerta | Média | `/status` expõe; sem alerta automático configurado. |
+| E2E local bloqueado no Windows (WinError 10106 Winsock) | Baixa | Por design — testes e2e só rodam no CI Linux. |
+
+**CI smoke ingestor**: job `ingestor-smoke` adicionado ao `ci.yml` para garantir que dependências do ingestor estejam instaladas em cada PR.
+
+**Cobertura**: 272 passed, 19 skipped, 3 xfailed (era 264 antes desta sessão).
+```
 
 ## Pendências humanas (Michel)
 

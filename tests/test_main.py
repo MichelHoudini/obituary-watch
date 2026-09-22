@@ -156,6 +156,26 @@ def test_status_schema_ok_false_when_migration_errors(monkeypatch):
     assert "TYPE deaths.occupation_qids" in body["schema_errors"]
 
 
+def test_startup_survives_failing_migration(monkeypatch):
+    """startup() must complete and /status must show schema_ok=False when
+    migrate_schema() records an error (the step catches internally and never raises)."""
+    import app.db as db_module
+
+    def _failing_migrate():
+        db_module._migrate_errors = ["TYPE deaths.occupation_qids — simulated"]
+
+    monkeypatch.setattr(db_module, "migrate_schema", _failing_migrate)
+
+    from app.main import startup
+    startup()  # must not raise
+
+    r = client.get("/status")
+    body = r.json()
+    assert r.status_code == 200
+    assert body["schema_ok"] is False
+    assert any("occupation_qids" in e for e in body["schema_errors"])
+
+
 def test_sitemap_is_xml():
     r = client.get("/sitemap.xml")
     assert r.status_code == 200

@@ -40,7 +40,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install requests mwparserfromhell psycopg2-binary sentry-sdk
+        run: pip install requests mwparserfromhell psycopg2-binary sentry-sdk sseclient-py httpx
 
       - name: Run global death ingestor
         env:

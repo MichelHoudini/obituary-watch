@@ -62,6 +62,47 @@ jobs:
       - name: pytest (unit tests)
         run: python -m pytest tests --ignore=tests/e2e -v -rs
 
+  ingestor-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ingestor deps only (mirrors ingestor.yml — catches missing deps)
+        run: pip install requests mwparserfromhell psycopg2-binary sentry-sdk sseclient-py httpx
+
+      - name: Ingestor dry-run with offline fixtures
+        run: |
+          python - <<'EOF'
+          import app.ingestion as ing
+          import app.filters as flt
+
+          flt._OFFLINE_MODE = True
+          flt._FIXTURE_ENTITIES = {
+              "Smoke_Test_Person": {"occupation_qids": ["Q177220"], "location_qids": []}
+          }
+          ing._OFFLINE_MODE = True
+          ing._FIXTURE_DEATHS = [{
+              "qid": "Q99999",
+              "wiki_title": "Smoke_Test_Person",
+              "display_name": "Smoke Test Person",
+              "death_date_raw": "2024-01-01T00:00:00Z",
+              "categories": ["Category:Dead people"],
+              "wikitext": "{{Infobox person|death_date={{Death date|2024|1|1}}}}",
+          }]
+
+          result = ing.run(days_back=1, dry_run=True)
+          print(f"ingestor dry-run: {result}")
+          assert result["errors"] == 0, f"unexpected errors: {result}"
+          EOF
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 10

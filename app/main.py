@@ -21,6 +21,7 @@ from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, get
 from app.dates import _parse_death_date, format_death_date
 from app.db import (
     add_watch,
+    cancel_watch_by_token,
     get_all_watched_titles,
     get_death_count,
     get_death_for_title,
@@ -28,12 +29,14 @@ from app.db import (
     get_deaths_by_location_qid,
     get_deaths_by_occupation_qid,
     get_migration_errors,
+    get_or_create_cancel_token,
     get_watch_count,
     get_watch_count_for_title,
     get_watch_counts,
     get_watcher_health,
     init_db,
     remove_false_death_detections,
+    remove_watch,
     seed_watched,
 )
 from app.email import send_watch_confirmation
@@ -331,6 +334,7 @@ def add_watch_endpoint(req: WatchRequest, request: Request):
         is_new = add_watch(title, email, filter_occupation_qid=occ, filter_location_qid=loc)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    cancel_token = get_or_create_cancel_token(title, email)
     if title:
         info = get_person_info(title)
         person_name = (info or {}).get("name") or title.replace("_", " ")
@@ -342,7 +346,104 @@ def add_watch_endpoint(req: WatchRequest, request: Request):
         "filter_location_qid": loc,
         "message": "Added" if is_new else "Already watching",
         "person_url": f"{base_url(request)}/person/{title_to_slug(title)}" if title else None,
+        "cancel_url": f"{base_url(request)}/cancel?token={cancel_token}",
     }
+
+
+@app.get("/cancel", response_class=HTMLResponse)
+def cancel_confirm(request: Request, token: str = ""):
+    """Show confirmation page. GET so email prefetch doesn't auto-cancel."""
+    if not token:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Cancel subscription</h1>
+          <p class="lede">No token provided. Use the link in your notification email.</p>
+        </div></main>{footer()}"""
+        return HTMLResponse(content=layout(request, "Cancel subscription — Mortivox",
+                                           "Cancel your Mortivox subscription.", body, "/cancel"))
+    body = f"""<main class="page"><div class="container">{nav()}
+      <h1 class="title">Cancel subscription</h1>
+      <p class="lede">Click the button below to permanently cancel this subscription.</p>
+      <form method="POST" action="/cancel?token={e(token)}" style="margin-top:24px">
+        <button class="button" type="submit">Yes, cancel my subscription</button>
+      </form>
+    </div></main>{footer()}"""
+    return HTMLResponse(content=layout(request, "Cancel subscription — Mortivox",
+                                       "Cancel your Mortivox subscription.", body, "/cancel"))
+
+
+@app.post("/cancel", response_class=HTMLResponse)
+def cancel_execute(request: Request, token: str = ""):
+    """Execute cancellation. POST so one-click unsubscribe and email prefetch work correctly."""
+    deleted = cancel_watch_by_token(token) if token else False
+    if deleted:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Subscription cancelled</h1>
+          <p class="lede">You have been unsubscribed and will no longer receive notifications.</p>
+          <div style="margin-top:24px"><a class="button secondary" href="/">Return home</a></div>
+        </div></main>{footer()}"""
+        msg = "Subscription cancelled — Mortivox"
+    else:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Link already used</h1>
+          <p class="lede">This cancellation link has already been used or is invalid.</p>
+          <div style="margin-top:24px"><a class="button secondary" href="/">Return home</a></div>
+        </div></main>{footer()}"""
+        msg = "Cancellation link invalid — Mortivox"
+    return HTMLResponse(content=layout(request, msg, msg, body, "/cancel"))
+
+
+@app.get("/unsubscribe", response_class=HTMLResponse)
+def unsubscribe_page(request: Request, wiki_title: str = "", email_hint: str = ""):
+    """Show unsubscribe form (fallback for subscriptions without a cancel token)."""
+    body = f"""<main class="page"><div class="container">{nav()}
+      <h1 class="title">Unsubscribe</h1>
+      <p class="lede">Enter your details to cancel your subscription.</p>
+      <div id="unsubForm" style="display:flex;flex-direction:column;gap:16px;max-width:480px;margin-top:24px">
+        <div class="input-group" style="border-radius:var(--mv-radius-md)">
+          <input type="email" id="unsubEmail" placeholder="your@email.com" value="{e(email_hint)}" required>
+        </div>
+        <div class="input-group" style="border-radius:var(--mv-radius-md)">
+          <input type="text" id="unsubTitle" placeholder="Wikipedia title (optional)" value="{e(wiki_title)}">
+        </div>
+        <button class="button" onclick="doUnsub()">Unsubscribe</button>
+      </div>
+      <script>
+        async function doUnsub() {{
+          const email = document.getElementById('unsubEmail').value.trim();
+          const wiki_title = document.getElementById('unsubTitle').value.trim();
+          if (!email) return;
+          const url = '/unsubscribe?email=' + encodeURIComponent(email)
+                    + (wiki_title ? '&wiki_title=' + encodeURIComponent(wiki_title) : '');
+          const r = await fetch(url, {{method:'POST'}});
+          document.location.href = r.url || url;
+        }}
+      </script>
+    </div></main>{footer()}"""
+    return HTMLResponse(content=layout(request, "Unsubscribe — Mortivox",
+                                       "Unsubscribe from Mortivox notifications.", body, "/unsubscribe"))
+
+
+@app.post("/unsubscribe", response_class=HTMLResponse)
+def unsubscribe_execute(request: Request, email: str = "", wiki_title: str = ""):
+    """Execute unsubscribe by email + optional wiki_title (query params or JSON)."""
+    email = email.strip().lower()
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    deleted = remove_watch(wiki_title, email) if email else False
+    if deleted:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Unsubscribed</h1>
+          <p class="lede">You have been removed from the notification list.</p>
+          <div style="margin-top:24px"><a class="button secondary" href="/">Return home</a></div>
+        </div></main>{footer()}"""
+        msg = "Unsubscribed — Mortivox"
+    else:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Not found</h1>
+          <p class="lede">No active subscription found for that email address.</p>
+          <div style="margin-top:24px"><a class="button secondary" href="/unsubscribe">Try again</a></div>
+        </div></main>{footer()}"""
+        msg = "Subscription not found — Mortivox"
+    return HTMLResponse(content=layout(request, msg, msg, body, "/unsubscribe"))
 
 
 @app.get("/api/filters/occupations")
@@ -796,8 +897,16 @@ def subscribe_filter_page(request: Request):
           li.style.cssText = 'padding:10px 16px;cursor:pointer;border-bottom:1px solid var(--mv-border);font-size:14px';
           li.onmouseenter = () => li.style.background = 'var(--mv-surface-raised)';
           li.onmouseleave = () => li.style.background = '';
-          li.innerHTML = `<span style="color:var(--mv-text-primary)">${{item.label || item.id}}</span>
-            ${{item.description ? `<span style="color:var(--mv-text-tertiary);font-size:12px"> — ${{item.description}}</span>` : ''}}`;
+          const labelSpan = document.createElement('span');
+          labelSpan.style.color = 'var(--mv-text-primary)';
+          labelSpan.textContent = item.label || item.id;
+          li.appendChild(labelSpan);
+          if (item.description) {{
+            const descSpan = document.createElement('span');
+            descSpan.style.cssText = 'color:var(--mv-text-tertiary);font-size:12px';
+            descSpan.textContent = ' — ' + item.description;
+            li.appendChild(descSpan);
+          }}
           li.onclick = () => onSelect(item);
           ul.appendChild(li);
         }});

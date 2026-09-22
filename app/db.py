@@ -366,6 +366,39 @@ def get_emails_for(wiki_title: str) -> list[str]:
     return [r["email"] for r in rows]
 
 
+def get_cancel_tokens_for_wiki(wiki_title: str) -> dict[str, str | None]:
+    """Return {email: cancel_token} for all watches on wiki_title."""
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"SELECT email, cancel_token FROM watches WHERE wiki_title={ph}", (wiki_title,))
+        rows = _fetchall(cur)
+    return {r["email"]: r.get("cancel_token") for r in rows}
+
+
+def get_or_create_cancel_token(wiki_title: str, email: str) -> str:
+    """Return the existing cancel_token for a watch, generating one if absent."""
+    import secrets
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    email = email.strip().lower()
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn,
+            f"SELECT cancel_token FROM watches WHERE wiki_title={ph} AND email={ph}",
+            (wiki_title, email),
+        )
+        row = _fetchone(cur)
+    if row and row.get("cancel_token"):
+        return row["cancel_token"]
+    token = secrets.token_urlsafe(32)
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn,
+            f"UPDATE watches SET cancel_token={ph} WHERE wiki_title={ph} AND email={ph}",
+            (token, wiki_title, email),
+        )
+    return token
+
+
 def get_all_watched_titles() -> set[str]:
     with get_conn() as conn:
         cur = _exec(conn, """
