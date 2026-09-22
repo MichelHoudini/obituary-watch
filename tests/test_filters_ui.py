@@ -154,9 +154,12 @@ def test_subscribe_filter_page_has_form():
     assert "emailInput" in body, "Campo de email ausente"
 
 
-def test_subscribe_filter_page_calls_wikidata_from_browser():
-    """O JS da página deve chamar Wikidata com origin=* (client-side)."""
+def test_subscribe_filter_page_uses_backend_proxy():
+    """O JS da página deve chamar o backend proxy (/api/filters/occupations e
+    /api/filters/locations) em vez de chamar Wikidata diretamente do browser.
+    Isso garante que o autocomplete funciona sem CORS e que o teste e2e de XSS
+    pode interceptar a URL local de forma confiável."""
     r = client.get("/subscribe/filter")
     assert r.status_code == 200
-    assert "wikidata.org" in r.text, "Link para Wikidata ausente no JS"
-    assert "origin=*" in r.text, "origin=* ausente (necessário para cross-origin do browser)"
+    assert "/api/filters/occupations" in r.text, "Proxy de ocupações ausente no JS"
+    assert "/api/filters/locations" in r.text, "Proxy de localizações ausente no JS"

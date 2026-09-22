@@ -81,8 +81,13 @@ jobs:
       - name: Ingestor dry-run with offline fixtures
         run: |
           python - <<'EOF'
+          from app.db import init_db, migrate_schema
           import app.ingestion as ing
           import app.filters as flt
+
+          # Init + migrate so all columns exist before _run_candidates queries them.
+          init_db()
+          migrate_schema()
 
           flt._OFFLINE_MODE = True
           flt._FIXTURE_ENTITIES = {

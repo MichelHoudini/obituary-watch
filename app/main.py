@@ -880,13 +880,12 @@ def subscribe_filter_page(request: Request):
         let t; return function(...a) {{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }};
       }}
 
-      async function searchWikidata(q) {{
+      async function searchEntities(q, apiPath) {{
         if (!q || q.length < 2) return [];
         try {{
-          const url = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${{encodeURIComponent(q)}}&language=en&type=item&limit=8&format=json&origin=*`;
-          const r = await fetch(url);
+          const r = await fetch(`${{apiPath}}?q=${{encodeURIComponent(q)}}`);
           if (!r.ok) return [];
-          return (await r.json()).search || [];
+          return (await r.json()).results || [];
         }} catch {{ return []; }}
       }}
 
@@ -899,7 +898,7 @@ def subscribe_filter_page(request: Request):
           li.onmouseleave = () => li.style.background = '';
           const labelSpan = document.createElement('span');
           labelSpan.style.color = 'var(--mv-text-primary)';
-          labelSpan.textContent = item.label || item.id;
+          labelSpan.textContent = item.label || item.qid;
           li.appendChild(labelSpan);
           if (item.description) {{
             const descSpan = document.createElement('span');
@@ -913,20 +912,20 @@ def subscribe_filter_page(request: Request):
         return ul;
       }}
 
-      function setupAutocomplete(inputId, resultsId, qidId, selectedId) {{
+      function setupAutocomplete(inputId, resultsId, qidId, selectedId, apiPath) {{
         const input = document.getElementById(inputId);
         const resultsDiv = document.getElementById(resultsId);
         const qidField = document.getElementById(qidId);
         const selectedDiv = document.getElementById(selectedId);
 
         const search = debounce(async (q) => {{
-          const items = await searchWikidata(q);
+          const items = await searchEntities(q, apiPath);
           resultsDiv.innerHTML = '';
           if (!items.length) {{ resultsDiv.style.display='none'; return; }}
           resultsDiv.appendChild(makeResultList(items, item => {{
-            qidField.value = item.id;
-            input.value = item.label || item.id;
-            selectedDiv.textContent = `Selected: ${{item.label || item.id}} (${{item.id}})`;
+            qidField.value = item.qid;
+            input.value = item.label || item.qid;
+            selectedDiv.textContent = `Selected: ${{item.label || item.qid}} (${{item.qid}})`;
             selectedDiv.style.display = 'block';
             resultsDiv.style.display = 'none';
           }}));
@@ -943,8 +942,8 @@ def subscribe_filter_page(request: Request):
         }});
       }}
 
-      setupAutocomplete('occInput', 'occResults', 'occQid', 'occSelected');
-      setupAutocomplete('locInput', 'locResults', 'locQid', 'locSelected');
+      setupAutocomplete('occInput', 'occResults', 'occQid', 'occSelected', '/api/filters/occupations');
+      setupAutocomplete('locInput', 'locResults', 'locQid', 'locSelected', '/api/filters/locations');
 
       async function submitFilterWatch() {{
         const occ = document.getElementById('occQid').value;

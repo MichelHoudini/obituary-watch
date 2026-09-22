@@ -84,22 +84,24 @@ def test_no_python_traceback_visible_on_any_main_page(live_server, page):
 
 def test_xss_safe_autocomplete_label(live_server, page):
     """Autocomplete labels must be rendered with textContent (not innerHTML).
-    A malicious label like <img src=x onerror=window._xss=1> injected via a
-    mocked Wikidata response must not execute as HTML."""
+    A malicious label injected via a mocked /api/filters/occupations response
+    must not execute as HTML — the onerror handler must never fire and the
+    literal '<img' text must appear in the results list."""
     js_errors = []
     page.on("pageerror", lambda exc: js_errors.append(str(exc)))
 
     page.goto(live_server + "/subscribe/filter")
 
-    # Intercept the Wikidata API call and return a malicious label
+    # Intercept the backend proxy endpoint (JS now calls /api/filters/occupations
+    # instead of Wikidata directly — local URLs are intercepted reliably).
     malicious_label = "<img src=x onerror=\"window._xss_fired=true\">"
     page.route(
-        "**/wikidata.org/w/api.php*",
+        "**/api/filters/occupations*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
             body=(
-                '{"search":[{"id":"Q1","label":"'
+                '{"results":[{"qid":"Q1","label":"'
                 + malicious_label.replace('"', '\\"')
                 + '","description":"test"}]}'
             ),
@@ -108,7 +110,7 @@ def test_xss_safe_autocomplete_label(live_server, page):
 
     # Type in the occupation field to trigger the autocomplete
     page.fill("#occInput", "test")
-    page.wait_for_timeout(500)  # debounce + fetch
+    page.wait_for_timeout(500)  # debounce (300 ms) + fetch
 
     # The malicious label must have been rendered as plain text (textContent),
     # not as HTML — so the onerror handler must never have fired.
@@ -118,8 +120,8 @@ def test_xss_safe_autocomplete_label(live_server, page):
     )
     assert js_errors == [], f"Unexpected JS errors: {js_errors}"
 
-    # The result item should appear but as plain text containing the literal < character
-    # (verifying the content was inserted as text, not parsed as HTML)
+    # The result item should appear as plain text containing the literal < character
+    # (verifying the content was inserted as text, not parsed as HTML).
     page.wait_for_selector("#occResults div", timeout=2000)
     result_text = page.inner_text("#occResults")
     assert "<img" in result_text, (

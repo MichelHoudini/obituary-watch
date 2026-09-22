@@ -13,7 +13,6 @@ import pytest
 from app.db import add_watch, record_death
 from app.filters import enrich_death, get_notifiable_emails_for_death
 
-
 # ── INT-040: matching death triggers filter email ────────────────────────────
 
 def test_int040_filter_email_sent_on_matching_death(monkeypatch):
