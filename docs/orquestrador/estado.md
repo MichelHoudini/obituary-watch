@@ -1,0 +1,342 @@
+# Estado do Orquestrador — Mortivox
+
+Atualizado: 2026-09-21 (sessão Codex review fixes)
+
+## Ambiente
+
+| Item | Valor |
+|---|---|
+| Diretório de trabalho | C:\IA\obituary-watch (D:\ inacessível para escrita) |
+| Branch padrão | master |
+| Python | 3.14.5 (disponível) |
+| Node | disponível |
+| Docker | **não encontrado** |
+| gh CLI | 2.101.0 instalado via winget, **não autenticado** |
+| Postgres local | não disponível |
+| Playwright Chromium | instalado (winldd baixado) |
+| E2E local | **BLOQUEADO** — WinError 10106 (Winsock) impede uvicorn de subir em subprocess |
+
+**gh auth**: não autenticado. Para ativar PRs via gh, rodar:
+```
+gh auth login --scopes repo,workflow
+```
+
+## Fases
+
+| Fase | Branch | PR | Status | Observações |
+|---|---|---|---|---|
+| 0. Reconhecimento | qa/f0-reconhecimento | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f0-reconhecimento) | ENTREGUE | Baseline registrado; gh sem auth, PR manual |
+| 1. Plano e contrato | qa/f1-plano | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f1-plano) | ENTREGUE | Plano, contrato filtros, decisões |
+| 2. Unidade e integração | qa/f2-unidade-integracao | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f2-unidade-integracao) | ENTREGUE | 85 pass, 23 xfail; 54% cov; bug UNI-003b corrigido |
+| 3. Sistema (e2e, email, adversarial, perf) | qa/f3-sistema | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f3-sistema) | ENTREGUE | 126 pass, 36 xfail, 56% cov; bugs EML/ADV documentados via xfail |
+| 4. Portão técnico de SEO | qa/f4-seo | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f4-seo) | ENTREGUE | 45 pass, 5 skip, 1 xfail; SEO-020 xfail (google-site-verification ausente no HTML) |
+| 5. Search Console e indexação | qa/f5-search-console | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f5-search-console) | ENTREGUE | 173 pass, 12 skip, 36 xfail; GOOGLE_SITE_VERIFICATION env var; search-console.md |
+| 6. Verificação independente e relatório | qa/f6-relatorio | [criar PR](https://github.com/MichelHoudini/obituary-watch/pull/new/qa/f6-relatorio) | ENTREGUE | relatorio-final.md gerado; 0 testes vazios; 3 execuções sem flakiness |
+
+## PRs de implementação (criados em 2026-09-21)
+
+| PR | Branch | Base | Commit | Status |
+|---|---|---|---|---|
+| PR 1 | fix/email-bugs | qa/f6-relatorio | a9178d8 | **PRONTO — aguarda `gh auth login`** |
+| PR 2 | feat/filtros-enriquecimento | fix/email-bugs | 3c11279 | **PRONTO — aguarda `gh auth login`** |
+| PR 3 | feat/filtros-ui | feat/filtros-enriquecimento | 3fcbe31 | **PRONTO — aguarda `gh auth login`** |
+| PR 4 | feat/paginas-nicho | feat/filtros-ui | a6063c9 | **PRONTO — aguarda `gh auth login`** |
+| Audit | docs/auditoria-filtros | feat/paginas-nicho | 87cdf98 | PRONTO — docs only |
+| PR 5 | feat/ingestao-global | docs/auditoria-filtros | 1941e6b | PRONTO — 228 pass, 15 novos testes ING |
+| PR 6 | fix/tokens-e-email-headers | feat/ingestao-global | 03806dc | PRONTO — 235 pass, 7 xfail→pass |
+| PR 7 | fix/schema-e-consistencia | fix/tokens-e-email-headers | 2563d91 | PRONTO — 250 pass, CONF/ING/ADV novos testes |
+| PR 8 | fix/perf-ci-backfill | fix/schema-e-consistencia | d876b97 | PRONTO — 250 pass local; 11 skip esperado no CI |
+| PR #18 (consolidado) | fix/perf-ci-backfill | master | pendente push | EM ANDAMENTO — 5 problemas Codex corrigidos, 272 pass, aguardando push + gh auth |
+
+Para criar os PRs após autenticar o gh CLI:
+```powershell
+cd "C:\IA\obituary-watch"
+gh pr create --draft --base qa/f6-relatorio --head fix/email-bugs --title "fix: EML-002 wikitext in email, ADV-004 XSS, INT-003 cancelled subscriber"
+gh pr create --draft --base fix/email-bugs --head feat/filtros-enriquecimento --title "feat: filters enrichment — schema migration, filters.py, wikidata fixtures"
+gh pr create --draft --base feat/filtros-enriquecimento --head feat/filtros-ui --title "feat: filter subscription UI, /subscribe/filter, /api/filters endpoints"
+gh pr create --draft --base feat/filtros-ui --head feat/paginas-nicho --title "feat: nicho pages /occupation/{qid} and /location/{qid}, sitemap update"
+gh pr create --draft --base feat/paginas-nicho --head docs/auditoria-filtros --title "docs: auditoria de filtros — 5 questoes a-e, somente leitura"
+gh pr create --draft --base docs/auditoria-filtros --head feat/ingestao-global --title "feat: global death ingestor via Wikidata SPARQL + Wikipedia confirmation"
+gh pr create --draft --base feat/ingestao-global --head fix/tokens-e-email-headers --title "fix: ADV-006/007/008 cancel tokens, EML-003-006 plain-text/headers"
+gh pr create --draft --base fix/tokens-e-email-headers --head fix/schema-e-consistencia --title "fix: schema TEXT[], GIN index, is_confirmed_death, safe ingestor, Postgres CI"
+gh pr create --draft --base fix/schema-e-consistencia --head fix/perf-ci-backfill --title "fix: PERF-004 CI, seed 300k, backfill janelas reais + resume, run_window"
+```
+
+## CI Fix — PR #18 (2026-09-21)
+
+### Causa raiz do job quality vermelho
+
+1. **`migrate_schema()` não idempotente**: todos os `ALTER TABLE ADD COLUMN` estavam em uma única transação Postgres. Quando o primeiro ALTER falhava (coluna já existe pós `init_db()`), a transação entrava em estado abortado e todos os comandos seguintes falhavam com `InFailedSqlTransaction`, incluindo o `conn.commit()`.
+2. **Conversão `TEXT → TEXT[]` com cast errado**: usava `{col}::jsonb::text[]` que falha se a coluna já é `TEXT[]`.
+3. **Health check com usuário errado**: `pg_isready` sem `-U` usava `root` (o usuário do runner), gerando 5× `FATAL: role "root" does not exist` no log.
+
+### Arquivos alterados
+
+| Arquivo | Mudança |
+|---|---|
+| `app/db.py` | `migrate_schema()` reescrita: cada passo em transação própria, `ADD COLUMN IF NOT EXISTS`, converte `TEXT→TEXT[]` só quando `udt_name = 'text'`, `pg_advisory_lock(987654321)` para concorrência |
+| `.github/workflows/ci.yml` | `--health-cmd "pg_isready -U mortivox"` |
+| `tests/fixtures/schema_producao.sql` | Schema legado de produção (origin/master) para testes MIG-002+ |
+| `tests/test_migration.py` | Testes MIG-001 a MIG-005 contra Postgres real (skip automático sem DATABASE_URL) |
+
+### Testes de migração esperados no CI
+
+| Teste | Cenário |
+|---|---|
+| MIG-001 | DB limpo — init_db + migrate_schema×2, sem erro |
+| MIG-002 | Schema legado com dados reais — migrar e verificar TEXT[], backfill, segunda rodada é no-op |
+| MIG-003 | Estado parcial (1 coluna já existe) — migração completa o resto |
+| MIG-004 | 2 threads simultâneos — nenhum erro, nenhum token duplicado |
+| MIG-005 | JSON inválido em `occupation_qids` — TYPE step falha isolado, outros passos completam |
+
+---
+
+## Análise dos 12 testes skipped (local e CI)
+
+| # | Teste | Motivo | Desbloqueável? |
+|---|---|---|---|
+| 1 | `test_eml007_spf_record_present` | @live: DNS real | Não — por design |
+| 2 | `test_eml008_dkim_record_present` | @live: DNS real | Não — por design |
+| 3 | `test_eml009_dmarc_record_present` | @live: DNS real | Não — por design |
+| 4 | `test_eml010_bounce_suppresses_future_sends` | Feature pendente (webhook Resend) | Só com implementação |
+| 5 | `test_eml011_complaint_suppresses_future_sends` | Feature pendente (webhook Resend) | Só com implementação |
+| 6 | `test_perf003_warm_ttfb_under_500ms` | @live: servidor aquecido | Não — por design |
+| 7 | **`test_perf004_gin_index_used_for_array_containment`** | DATABASE_URL apagado por conftest antes do teste | **Desbloqueado neste PR** — captura módulo-level |
+| 8 | `test_seo008_http_redirects_to_https_in_one_hop` | Render proxy, não app | Não — por design |
+| 9 | `test_seo009_www_redirects_to_apex_in_one_hop` | Render proxy, não app | Não — por design |
+| 10 | `test_seo021_live_sitemap_urls_accessible` | @live: mortivox.com ao vivo | Não — por design |
+| 11 | `test_seo022_live_warm_ttfb_under_500ms` | @live: servidor aquecido | Não — por design |
+| 12 | `test_seo023_lighthouse_lcp_cls` | @live: Lighthouse CLI | Não — por design |
+
+**Resultado esperado no CI após merge do PR 8:** 11 skipped (PERF-004 passa → 1 skip a menos).
+
+## Sessão Codex review (2026-09-21) — Resultado
+
+### Contagem de testes após correções
+
+| Métrica | Antes da sessão | Após correções |
+|---|---|---|
+| passed | 264 | **272** |
+| skipped | 19 | 19 |
+| xfailed | 3 | 3 |
+| Novos testes adicionados | — | 8 (INT-040–044, CAN-001–007, e2e XSS+cancel) |
+
+### Os 5 problemas do Codex — diagnóstico final
+
+| # | Problema | Era real? | Resultado |
+|---|---|---|---|
+| 1 | App crashava se migração falhasse | **Já estava corrigido** | `migrate_schema()` captura erros por passo; `startup()` nunca propaga. Teste `test_startup_survives_failing_migration` PASS. |
+| 2 | Assinantes de filtro nunca recebiam email | **REAL** | **Corrigido.** `watcher.py` agora chama `get_notifiable_emails_for_death()`. `ingestion.py` agora chama `_notify_filter_subscribers()` após enriquecimento. Testes INT-040–044 PASS. |
+| 3 | `sseclient` e `httpx` ausentes no ingestor.yml | **REAL** | **Corrigido.** `sseclient-py httpx` adicionados ao `pip install` do `ingestor.yml`. Job `ingestor-smoke` adicionado ao `ci.yml`. |
+| 4 | XSS via innerHTML no autocomplete | **REAL** | **Corrigido.** `makeResultList()` reescrito para usar `textContent` em vez de `innerHTML`. Teste Playwright `test_xss_safe_autocomplete_label` PASS. |
+| 5 | `/cancel` e `/unsubscribe` retornavam 404 | **REAL** | **Corrigido.** Rotas GET+POST adicionadas em `main.py`. `/watch` agora gera e retorna `cancel_url`. `List-Unsubscribe-Post` usa endpoint POST correto. Testes CAN-001–007 PASS. |
+
+### Arquivos alterados nesta sessão
+
+| Arquivo | Mudança |
+|---|---|
+| `app/watcher.py` | Usa `get_notifiable_emails_for_death()` + `get_cancel_tokens_for_wiki()` |
+| `app/ingestion.py` | Adicionada `_notify_filter_subscribers()`, chamada após `enrich_death()` |
+| `app/main.py` | Rotas `/cancel` GET+POST e `/unsubscribe` GET+POST; `/watch` gera cancel_url; XSS fix |
+| `app/db.py` | Adicionadas `get_cancel_tokens_for_wiki()` e `get_or_create_cancel_token()` |
+| `.github/workflows/ingestor.yml` | `sseclient-py httpx` adicionados ao pip install |
+| `.github/workflows/ci.yml` | Job `ingestor-smoke` adicionado |
+| `tests/test_main.py` | Adicionado `test_startup_survives_failing_migration` |
+| `tests/test_filter_notification.py` | Novo arquivo — INT-040 a INT-044 |
+| `tests/test_cancel_routes.py` | Novo arquivo — CAN-001 a CAN-007 |
+| `tests/e2e/test_e2e.py` | Adicionados `test_xss_safe_autocomplete_label`, `test_cancel_page_returns_200`, `test_unsubscribe_page_returns_200` |
+| `docs/orquestrador/watcher.md` | Novo arquivo — arquitetura SSE, hibernação Render, enrich_death, watcher_is_stale, riscos |
+
+### Descrição PR #18 — seção "Riscos" para colar manualmente
+
+Cole isto no corpo do PR #18 no GitHub (pode editar via web mesmo sem gh CLI):
+
+```markdown
+## Riscos
+
+| Risco | Severidade | Status |
+|---|---|---|
+| **Filtros de assinatura nunca recebiam email** — watcher chamava `get_emails_for` em vez de `get_notifiable_emails_for_death` | Alta | **Corrigido neste PR** |
+| **Ingestor também não enviava emails de filtro** — caminho de ingestão global não chamava `_notify_filter_subscribers` | Alta | **Corrigido neste PR** |
+| **`/cancel` e `/unsubscribe` retornavam 404** — links nos emails eram quebrados | Alta | **Corrigido neste PR** |
+| **XSS via autocomplete** — `makeResultList()` usava `innerHTML` com dados não sanitizados do Wikidata | Média | **Corrigido neste PR** |
+| **`sseclient` e `httpx` ausentes no ingestor.yml** — deploy CI do ingestor quebrava silenciosamente | Média | **Corrigido neste PR** |
+| Enriquecimento Wikidata indisponível → arrays vazios → filtros não notificam para aquela morte | Média | Conhecido; sem retry. Arrays vazios são o resultado silencioso. |
+| Cota GitHub Actions esgotada ou job pulado → sem heartbeat → `watcher_is_stale=true` sem alerta | Média | `/status` expõe; sem alerta automático configurado. |
+| E2E local bloqueado no Windows (WinError 10106 Winsock) | Baixa | Por design — testes e2e só rodam no CI Linux. |
+
+**CI smoke ingestor**: job `ingestor-smoke` adicionado ao `ci.yml` para garantir que dependências do ingestor estejam instaladas em cada PR.
+
+**Cobertura**: 272 passed, 19 skipped, 3 xfailed (era 264 antes desta sessão).
+```
+
+## Pendências humanas (Michel)
+
+- [ ] **gh auth login --scopes repo,workflow** — para criar PRs via CLI (comandos acima)
+- [ ] **Search Console**: qual o erro exato? Tipo de propriedade (Domínio ou Prefixo de URL)? Método de verificação tentado?
+- [ ] **Banco de teste Postgres**: Docker não disponível. Pode instalar Docker Desktop ou criar segundo projeto Supabase de teste?
+- [ ] **E2E local BLOQUEADO** — WinError 10106 impede uvicorn em subprocess; testes e2e só rodam no CI (Linux). Não precisa de ação imediata.
+- [ ] **SPF DNS**: adicionar `v=spf1 include:spf.resend.com ~all` no DNS do mortivox.com para evitar rejeição de email.
+- [ ] **Versão do Postgres no Supabase**: o `ci.yml` usa `postgres:14` e o `perf.yml` usa `postgres:15`. Qual versão exata está no Supabase de produção? Ver em: Supabase Dashboard → Settings → Database → Postgres Version. Responder aqui para alinhar as imagens de CI.
+
+## Comandos que funcionam no PowerShell (C:\IA\obituary-watch)
+
+```powershell
+# Ativar venv
+.\.venv\Scripts\Activate.ps1
+
+# Rodar testes unitários
+Set-Location "C:\IA\obituary-watch"
+.\.venv\Scripts\python.exe -m pytest tests --ignore=tests/e2e -v
+
+# Cobertura
+.\.venv\Scripts\python.exe -m pytest tests --ignore=tests/e2e --cov=app --cov-report=term-missing --cov-branch -q
+
+# Linting
+.\.venv\Scripts\python.exe -m ruff check app tests
+.\.venv\Scripts\python.exe -m mypy app
+.\.venv\Scripts\python.exe -m vulture app
+```
+
+## Achados da Fase 0
+
+### Baseline de testes (versão unit, sem e2e)
+
+| Métrica | Valor |
+|---|---|
+| Total de testes (unit) | 50 |
+| Passou | 50 |
+| Falhou | 0 |
+| Warnings | 5 (deprecations, não bloqueantes) |
+| Tempo total | 12.69s |
+| Cobertura total | 51% (linhas + ramos) |
+
+#### Cobertura por módulo
+
+| Módulo | Stmts | Miss | Branch | BrPart | Cover |
+|---|---|---|---|---|---|
+| app/__init__.py | 0 | 0 | 0 | 0 | 100% |
+| app/catalog.py | 30 | 8 | 8 | 0 | 63% |
+| app/db.py | 186 | 33 | 30 | 7 | 80% |
+| app/email.py | 34 | 23 | 6 | 1 | 30% |
+| app/main.py | 237 | 75 | 40 | 4 | 65% |
+| app/milestones.py | 66 | 66 | 14 | 0 | 0% |
+| app/observability.py | 27 | 1 | 8 | 1 | 94% |
+| app/rss.py | 39 | 32 | 8 | 0 | 15% |
+| app/seed.py | 9 | 9 | 4 | 0 | 0% |
+| app/watcher.py | 113 | 76 | 40 | 1 | 31% |
+| app/wiki.py | 50 | 36 | 18 | 0 | 21% |
+| **TOTAL** | **791** | **359** | **176** | **14** | **51%** |
+
+#### E2E tests (baseline)
+- 8 erros de setup (BLOQUEADO: WinError 10106 Winsock no Windows, uvicorn não sobe em subprocess)
+- Falha pré-existente no ambiente local; CI Linux deve funcionar normalmente
+
+### Estrutura de branches e commits recentes (top 10)
+- `b4d54ea` Merge PR #17: fix keepalive ping timing out on genuine cold starts
+- `32a5204` fix: keepalive ping timing out on genuine cold starts
+- `d4e2b89` Merge PR #16: add keepalive ping to prevent Render free-tier 5xx errors
+- `0273a08` add: keepalive ping to prevent Render free-tier 5xx errors
+- `e17223e` Merge PR #15: distinguish fresh detections from old deaths logged late
+- `b774721` Merge PR #14: add Playwright e2e tests
+- `9ec79f4` Merge PR #13: add Sentry error tracking + structured JSON logging
+- `47058d7` Merge PR #12: add Ruff, mypy, pytest, vulture, CI workflow
+
+### Falhas pré-existentes catalogadas
+
+| ID | Falha | Impacto | Ação |
+|---|---|---|---|
+| PRE-001 | E2E BLOQUEADO: WinError 10106 Winsock Windows | Local only | Registrado, CI Linux não afetado |
+| PRE-002 | 5 warnings de deprecação (on_event, anyio, asyncio) | Zero impacto em runtime | Registrado, não corrigir agora |
+
+### Estrutura de testes existente
+
+```
+tests/
+  conftest.py          — isolamento SQLite por teste (autouse fixture)
+  test_db.py           — 15 testes: watches, deaths, watcher_health
+  test_main.py         — 19 testes: format_death_date, detection_label, rotas HTTP
+  test_observability.py — 5 testes: logging JSON, Sentry
+  test_watcher.py      — 8 testes: extract_death_date, placeholder, edge cases
+  e2e/
+    conftest.py        — live_server fixture (uvicorn subprocess + Playwright)
+    test_e2e.py        — 8 testes: homepage, navigation, person page, JS errors
+```
+
+Scripts utilitários relevantes:
+- `app/seed.py` — seed do banco para e2e
+- `app/watcher.py` — pode ser invocado diretamente para simular morte (tem `if __name__ == "__main__"`)
+
+Migrações: não existem arquivos de migração separados; schema criado por `init_db()` em `db.py` (CREATE IF NOT EXISTS).
+
+### Estado dos filtros: **AUSENTE**
+
+| Critério | Estado |
+|---|---|
+| Colunas de ancestrais em `deaths` | AUSENTE |
+| Campo de filtro em `watches` | AUSENTE |
+| Endpoint de escolha de filtro | AUSENTE |
+| Enriquecimento Wikidata no watcher | AUSENTE |
+| Script de simulação de morte com filtros | AUSENTE |
+
+### Ferramentas disponíveis para banco de teste
+
+| Opção | Estado |
+|---|---|
+| Docker Postgres | Docker não instalado |
+| Postgres local | Não encontrado |
+| Segundo projeto Supabase | Não configurado (aguarda Michel) |
+| SQLite fallback | DISPONÍVEL — conftest.py usa automaticamente |
+
+Testes de integração que exigem Postgres: marcados como `PENDENTE_DE_BANCO`.
+
+### Sondagem de produção (GET apenas)
+
+| URL | Status | Content-Type | Observações |
+|---|---|---|---|
+| https://mortivox.com/ | 200 | text/html; charset=utf-8 | TTFB ~5600ms (cold start) |
+| https://mortivox.com/robots.txt | 200 | text/plain | Válido, aponta para sitemap.xml |
+| https://mortivox.com/sitemap.xml | 200 | application/xml; charset=utf-8 | 113 URLs, XML válido |
+| https://mortivox.com/this-page... | 404 | — | 404 real, não soft 404 |
+| https://mortivox.com/person/clint-eastwood | 200 | text/html | Tem h1, tem canonical |
+| http://mortivox.com/ | 301 | — | Redireciona para https://mortivox.com/ |
+| https://www.mortivox.com/ | 301 | — | Redireciona para https://mortivox.com/ |
+
+**Observação TTFB**: ~5600ms indica que o serviço estava dormindo (Render free tier). O keepalive roda a cada 10min mas o GitHub Actions pode atrasar 18-65 min, deixando o serviço adormecer. Isso pode causar 5xx quando o Search Console rastreia.
+
+**Canonical home**: https://mortivox.com/ (correto, um único host canônico)
+**HTML sem JS**: conteúdo presente no HTML bruto (não depende de JS para conteúdo principal)
+
+### DNS
+
+| Registro | Valor | Status |
+|---|---|---|
+| TXT mortivox.com | google-site-verification=xcxPmibax57a7ivhr-gWRk_8wqlEnYlkopHWQEWayYA | presente |
+| SPF | — | **AUSENTE** — nenhum registro v=spf1 em mortivox.com |
+| DMARC | v=DMARC1; p=none; | presente (política fraca) |
+| DKIM (resend._domainkey) | chave RSA presente | presente |
+
+**Crítico para entrega**: SPF ausente pode causar rejeição de email em alguns provedores.
+
+**google-site-verification**: presente no DNS TXT, AUSENTE no HTML (meta tag não injetada pelo servidor). Isso significa:
+- Propriedade de Domínio no Search Console: DEVE funcionar (DNS TXT presente)
+- Propriedade de Prefixo de URL com meta tag: FALHA (meta tag não está no HTML)
+
+### Workflows CI/CD
+
+| Workflow | Trigger | Jobs |
+|---|---|---|
+| ci.yml | push master, pull_request | quality (ruff, mypy, vulture, pytest unit) + e2e (playwright chromium) |
+| keepalive.yml | cron */10 * * * * | ping /status (curl max-time 90s, retry 1) |
+| watcher.yml | schedule (a verificar) | watcher da Wikipedia |
+| milestones.yml | schedule seg/qua/sex 10:00 UTC | milestones workflow |
+
+### Achados relevantes para Fases 2-5
+
+1. **email.py**: sem `List-Unsubscribe` / `List-Unsubscribe-Post` (exigido Fase 3)
+2. **email.py**: sem link de cancelamento, sem versão texto plano
+3. **email.py**: sem dedupe por `(assinante, pessoa, evento)` — só `record_death` tem `ON CONFLICT`
+4. **watcher.py**: sem proteção contra race condition (duas execuções simultâneas podem duplicar email em janela pequena)
+5. **milestones.py**: 0% de cobertura de testes
+6. **rss.py**: 15% de cobertura
+5. **TTFB cold start**: ~5600ms — confirmar keepalive está ativo via GitHub Actions

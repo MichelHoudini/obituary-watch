@@ -18,18 +18,25 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.catalog import CATALOG, LISTS, catalog_people, find_catalog_person, get_list_people, title_to_slug
+from app.dates import _parse_death_date, format_death_date
 from app.db import (
     add_watch,
+    cancel_watch_by_token,
     get_all_watched_titles,
     get_death_count,
     get_death_for_title,
     get_deaths,
+    get_deaths_by_location_qid,
+    get_deaths_by_occupation_qid,
+    get_migration_errors,
+    get_or_create_cancel_token,
     get_watch_count,
     get_watch_count_for_title,
     get_watch_counts,
     get_watcher_health,
     init_db,
     remove_false_death_detections,
+    remove_watch,
     seed_watched,
 )
 from app.email import send_watch_confirmation
@@ -76,14 +83,26 @@ app.add_middleware(
 # not user input and not an XSS vector from the public.
 ANALYTICS_HEAD_SNIPPET = os.environ.get("ANALYTICS_HEAD_SNIPPET", "").strip()
 
+# Google Search Console URL-prefix verification. Set this to the token from
+# the "HTML tag" method in Search Console so the meta tag is injected into
+# every page's <head>. The DNS TXT method (Domain property) works without this,
+# but the URL-prefix property requires the meta tag.
+GOOGLE_SITE_VERIFICATION = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip()
+
 # How stale the watcher's last heartbeat can be before /status flags it.
 # GitHub Actions runs the watcher hourly, so 2h30 gives room for one missed run.
 WATCHER_STALE_HOURS = 2.5
+
+# Minimum confirmed deaths required for a nicho page to be indexable.
+# Below this threshold the page renders but carries noindex,follow.
+MIN_NICHO_DEATHS: int = int(os.environ.get("MIN_NICHO_DEATHS", "5"))
 
 
 @app.on_event("startup")
 def startup():
     init_db()
+    from app.db import migrate_schema  # noqa: PLC0415
+    migrate_schema()
     seed_catalog_titles()
     removed = remove_false_death_detections()
     if removed:
@@ -111,46 +130,6 @@ def js(value) -> str:
 
 def wiki_url(title: str) -> str:
     return f"https://en.wikipedia.org/wiki/{quote(title)}"
-
-
-_MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November", "December"]
-
-
-def _parse_death_date(raw: str | None) -> date | None:
-    """Extract just the date from a {{Death date and age|Y|M|D|...}} value.
-    Shared by format_death_date (for display) and detection_label (to tell
-    a fresh detection apart from an old death Mortivox is just now
-    recording)."""
-    if not raw:
-        return None
-    match = re.search(
-        r"\{\{\s*[Dd]eath date(?: and age)?\s*\|\s*(\d{4})\s*\|\s*(\d{1,2})\s*\|\s*(\d{1,2})",
-        raw,
-    )
-    if not match:
-        return None
-    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
-    try:
-        return date(year, month, day)
-    except ValueError:
-        return None
-
-
-def format_death_date(raw: str | None) -> str:
-    """Turn a raw {{Death date and age|Y|M|D|...}} wikitext value into a
-    human-readable date like 'October 1, 2025'. The template's first three
-    numeric parameters are always the death date (birth date, if present,
-    comes after) -- https://en.wikipedia.org/wiki/Template:Death_date_and_age
-
-    Falls back to returning the raw value unchanged if it doesn't match
-    this shape, so nothing is ever hidden -- just formatted when we can."""
-    if not raw:
-        return "confirmed"
-    parsed = _parse_death_date(raw)
-    if parsed is not None:
-        return f"{_MONTH_NAMES[parsed.month]} {parsed.day}, {parsed.year}"
-    return raw
 
 
 def detection_label(detected_at, death_date_raw: str | None, capitalize: bool = False) -> str:
@@ -250,6 +229,7 @@ def layout(request: Request, title: str, description: str, body: str, canonical_
   <meta name="twitter:title" content="{e(title)}">
   <meta name="twitter:description" content="{e(description)}">
   <meta name="twitter:image" content="{e(image_url)}">
+  {f'<meta name="google-site-verification" content="{e(GOOGLE_SITE_VERIFICATION)}">' if GOOGLE_SITE_VERIFICATION else ""}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
@@ -324,28 +304,193 @@ def global_rss_feed(request: Request):
     return Response(content=feed, media_type="application/atom+xml")
 
 
+_QID_RE = re.compile(r"^Q[0-9]+$")
+
+
 class WatchRequest(BaseModel):
-    wiki_title: str
+    wiki_title: str = ""
     email: str
+    filter_occupation_qid: str | None = None
+    filter_location_qid:   str | None = None
 
 
 @app.post("/watch")
 @limiter.limit("5/minute")
 def add_watch_endpoint(req: WatchRequest, request: Request):
-    if not req.wiki_title or not req.email:
-        raise HTTPException(400, "wiki_title and email are required")
     title = req.wiki_title.strip().replace(" ", "_")
     email = req.email.strip().lower()
-    is_new = add_watch(title, email)
-    info = get_person_info(title)
-    person_name = (info or {}).get("name") or title.replace("_", " ")
-    send_watch_confirmation(email, person_name, wiki_url(title))
+    occ   = req.filter_occupation_qid or None
+    loc   = req.filter_location_qid or None
+
+    if not email:
+        raise HTTPException(400, "email is required")
+    if not title and not occ and not loc:
+        raise HTTPException(400, "wiki_title or at least one filter QID is required")
+    for qid in filter(None, [occ, loc]):
+        if not _QID_RE.match(qid):
+            raise HTTPException(400, f"invalid QID format: {qid!r}")
+
+    try:
+        is_new = add_watch(title, email, filter_occupation_qid=occ, filter_location_qid=loc)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cancel_token = get_or_create_cancel_token(title, email)
+    if title:
+        info = get_person_info(title)
+        person_name = (info or {}).get("name") or title.replace("_", " ")
+        send_watch_confirmation(email, person_name, wiki_url(title))
     return {
         "added": is_new,
         "wiki_title": title,
+        "filter_occupation_qid": occ,
+        "filter_location_qid": loc,
         "message": "Added" if is_new else "Already watching",
-        "person_url": f"{base_url(request)}/person/{title_to_slug(title)}",
+        "person_url": f"{base_url(request)}/person/{title_to_slug(title)}" if title else None,
+        "cancel_url": f"{base_url(request)}/cancel?token={cancel_token}",
     }
+
+
+@app.get("/cancel", response_class=HTMLResponse)
+def cancel_confirm(request: Request, token: str = ""):
+    """Show confirmation page. GET so email prefetch doesn't auto-cancel."""
+    if not token:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Cancel subscription</h1>
+          <p class="lede">No token provided. Use the link in your notification email.</p>
+        </div></main>{footer()}"""
+        return HTMLResponse(content=layout(request, "Cancel subscription — Mortivox",
+                                           "Cancel your Mortivox subscription.", body, "/cancel"))
+    body = f"""<main class="page"><div class="container">{nav()}
+      <h1 class="title">Cancel subscription</h1>
+      <p class="lede">Click the button below to permanently cancel this subscription.</p>
+      <form method="POST" action="/cancel?token={e(token)}" style="margin-top:24px">
+        <button class="button" type="submit">Yes, cancel my subscription</button>
+      </form>
+    </div></main>{footer()}"""
+    return HTMLResponse(content=layout(request, "Cancel subscription — Mortivox",
+                                       "Cancel your Mortivox subscription.", body, "/cancel"))
+
+
+@app.post("/cancel", response_class=HTMLResponse)
+def cancel_execute(request: Request, token: str = ""):
+    """Execute cancellation. POST so one-click unsubscribe and email prefetch work correctly."""
+    deleted = cancel_watch_by_token(token) if token else False
+    if deleted:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Subscription cancelled</h1>
+          <p class="lede">You have been unsubscribed and will no longer receive notifications.</p>
+          <div style="margin-top:24px"><a class="button secondary" href="/">Return home</a></div>
+        </div></main>{footer()}"""
+        msg = "Subscription cancelled — Mortivox"
+    else:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Link already used</h1>
+          <p class="lede">This cancellation link has already been used or is invalid.</p>
+          <div style="margin-top:24px"><a class="button secondary" href="/">Return home</a></div>
+        </div></main>{footer()}"""
+        msg = "Cancellation link invalid — Mortivox"
+    return HTMLResponse(content=layout(request, msg, msg, body, "/cancel"))
+
+
+@app.get("/unsubscribe", response_class=HTMLResponse)
+def unsubscribe_page(request: Request, wiki_title: str = "", email_hint: str = ""):
+    """Show unsubscribe form (fallback for subscriptions without a cancel token)."""
+    body = f"""<main class="page"><div class="container">{nav()}
+      <h1 class="title">Unsubscribe</h1>
+      <p class="lede">Enter your details to cancel your subscription.</p>
+      <div id="unsubForm" style="display:flex;flex-direction:column;gap:16px;max-width:480px;margin-top:24px">
+        <div class="input-group" style="border-radius:var(--mv-radius-md)">
+          <input type="email" id="unsubEmail" placeholder="your@email.com" value="{e(email_hint)}" required>
+        </div>
+        <div class="input-group" style="border-radius:var(--mv-radius-md)">
+          <input type="text" id="unsubTitle" placeholder="Wikipedia title (optional)" value="{e(wiki_title)}">
+        </div>
+        <button class="button" onclick="doUnsub()">Unsubscribe</button>
+      </div>
+      <script>
+        async function doUnsub() {{
+          const email = document.getElementById('unsubEmail').value.trim();
+          const wiki_title = document.getElementById('unsubTitle').value.trim();
+          if (!email) return;
+          const url = '/unsubscribe?email=' + encodeURIComponent(email)
+                    + (wiki_title ? '&wiki_title=' + encodeURIComponent(wiki_title) : '');
+          const r = await fetch(url, {{method:'POST'}});
+          document.location.href = r.url || url;
+        }}
+      </script>
+    </div></main>{footer()}"""
+    return HTMLResponse(content=layout(request, "Unsubscribe — Mortivox",
+                                       "Unsubscribe from Mortivox notifications.", body, "/unsubscribe"))
+
+
+@app.post("/unsubscribe", response_class=HTMLResponse)
+def unsubscribe_execute(request: Request, email: str = "", wiki_title: str = ""):
+    """Execute unsubscribe by email + optional wiki_title (query params or JSON)."""
+    email = email.strip().lower()
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    deleted = remove_watch(wiki_title, email) if email else False
+    if deleted:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Unsubscribed</h1>
+          <p class="lede">You have been removed from the notification list.</p>
+          <div style="margin-top:24px"><a class="button secondary" href="/">Return home</a></div>
+        </div></main>{footer()}"""
+        msg = "Unsubscribed — Mortivox"
+    else:
+        body = f"""<main class="page"><div class="container">{nav()}
+          <h1 class="title">Not found</h1>
+          <p class="lede">No active subscription found for that email address.</p>
+          <div style="margin-top:24px"><a class="button secondary" href="/unsubscribe">Try again</a></div>
+        </div></main>{footer()}"""
+        msg = "Subscription not found — Mortivox"
+    return HTMLResponse(content=layout(request, msg, msg, body, "/unsubscribe"))
+
+
+@app.get("/api/filters/occupations")
+def filter_occupations(q: str = ""):
+    """Search Wikidata for occupation entities matching q."""
+    if not q:
+        raise HTTPException(400, "q is required")
+    return _wikidata_entity_search(q, language="en")
+
+
+@app.get("/api/filters/locations")
+def filter_locations(q: str = ""):
+    """Search Wikidata for location entities matching q."""
+    if not q:
+        raise HTTPException(400, "q is required")
+    return _wikidata_entity_search(q, language="en")
+
+
+def _wikidata_entity_search(query: str, language: str = "en") -> dict:
+    import httpx  # noqa: PLC0415
+    try:
+        r = httpx.get(
+            "https://www.wikidata.org/w/api.php",
+            params={
+                "action": "wbsearchentities",
+                "search": query,
+                "language": language,
+                "type": "item",
+                "limit": 20,
+                "format": "json",
+                "origin": "*",
+            },
+            timeout=8,
+        )
+        raw = r.json().get("search", [])
+        results = [
+            {
+                "qid":         item.get("id", ""),
+                "label":       item.get("label", ""),
+                "description": item.get("description", ""),
+            }
+            for item in raw
+            if _QID_RE.match(item.get("id", ""))
+        ]
+        return {"results": results}
+    except Exception:
+        return {"results": []}
 
 
 @app.get("/api/person")
@@ -384,6 +529,7 @@ def _watcher_is_stale(health: dict | None) -> bool:
 @app.get("/status")
 def status(request: Request):
     health = get_watcher_health()
+    migration_errors = get_migration_errors()
     return {
         "watching": get_watch_count(),
         "deaths_detected": get_death_count(),
@@ -392,6 +538,8 @@ def status(request: Request):
         "sitemap": f"{base_url(request)}/sitemap.xml",
         "watcher_health": health,
         "watcher_is_stale": _watcher_is_stale(health),
+        "schema_ok": len(migration_errors) == 0,
+        "schema_errors": migration_errors,
     }
 
 
@@ -406,6 +554,24 @@ def sitemap(request: Request):
     site = base_url(request)
     paths = ["/", "/people", "/deaths", "/lists/most-monitored", "/lists/oldest-living", "/lists/actors", "/lists/musicians"]
     paths += [f"/person/{p['slug']}" for p in CATALOG]
+
+    # Add indexable nicho pages (>= MIN_NICHO_DEATHS confirmed deaths)
+    all_deaths = get_deaths(10_000)
+    from app.db import _decode_qids  # noqa: PLC0415
+    occ_counts: dict[str, int] = {}
+    loc_counts: dict[str, int] = {}
+    for row in all_deaths:
+        for qid in _decode_qids(row.get("occupation_qids")):
+            occ_counts[qid] = occ_counts.get(qid, 0) + 1
+        for qid in _decode_qids(row.get("location_qids")):
+            loc_counts[qid] = loc_counts.get(qid, 0) + 1
+    for qid, cnt in occ_counts.items():
+        if cnt >= MIN_NICHO_DEATHS:
+            paths.append(f"/occupation/{qid}")
+    for qid, cnt in loc_counts.items():
+        if cnt >= MIN_NICHO_DEATHS:
+            paths.append(f"/location/{qid}")
+
     urls = "\n".join(
         f"  <url><loc>{e(site + path)}</loc><changefreq>daily</changefreq><priority>{'1.0' if path == '/' else '0.7'}</priority></url>"
         for path in paths
@@ -657,6 +823,306 @@ def deaths_page(request: Request):
     </div></main>{footer()}
     """
     return layout(request, "Detected deaths — Mortivox", "A public log of death-related Wikipedia changes detected by Mortivox.", body, "/deaths")
+
+
+@app.get("/subscribe/filter", response_class=HTMLResponse)
+def subscribe_filter_page(request: Request):
+    body = f"""
+    <main class="page"><div class="container">
+      {nav()}
+      <h1 class="title" style="margin-bottom:12px">Subscribe by filter</h1>
+      <p class="lede">Get notified when Mortivox detects a death matching your chosen occupation or location.</p>
+
+      <div style="max-width:520px;margin:0 auto">
+        <div id="filterForm" style="display:flex;flex-direction:column;gap:20px">
+
+          <div>
+            <label style="font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mv-text-quaternary);display:block;margin-bottom:8px">Occupation</label>
+            <div class="input-group" style="border-radius:var(--mv-radius-md)">
+              <input type="text" id="occInput" placeholder="e.g. musician, actor, politician…" autocomplete="off">
+            </div>
+            <div id="occResults" style="display:none;margin-top:4px;border:1px solid var(--mv-border);border-radius:var(--mv-radius-md);background:var(--mv-surface);overflow:hidden"></div>
+            <input type="hidden" id="occQid" value="">
+            <div id="occSelected" style="display:none;margin-top:6px;font-size:12px;color:var(--mv-text-secondary)"></div>
+          </div>
+
+          <div>
+            <label style="font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mv-text-quaternary);display:block;margin-bottom:8px">Location</label>
+            <div class="input-group" style="border-radius:var(--mv-radius-md)">
+              <input type="text" id="locInput" placeholder="e.g. United States, Brazil, New York…" autocomplete="off">
+            </div>
+            <div id="locResults" style="display:none;margin-top:4px;border:1px solid var(--mv-border);border-radius:var(--mv-radius-md);background:var(--mv-surface);overflow:hidden"></div>
+            <input type="hidden" id="locQid" value="">
+            <div id="locSelected" style="display:none;margin-top:6px;font-size:12px;color:var(--mv-text-secondary)"></div>
+          </div>
+
+          <div>
+            <label style="font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mv-text-quaternary);display:block;margin-bottom:8px">Your email</label>
+            <div class="input-group" style="border-radius:var(--mv-radius-md)">
+              <input type="email" id="emailInput" placeholder="your@email.com" autocomplete="email">
+            </div>
+          </div>
+
+          <button class="button" id="subscribeBtn" onclick="submitFilterWatch()">Subscribe →</button>
+          <p class="hint" id="filterHint">You need at least one filter (occupation or location).</p>
+        </div>
+
+        <div class="success-msg" id="filterSuccess">
+          <div class="success-icon">✓</div>
+          <span id="filterSuccessText">Subscription added</span>
+          <button class="back-btn" onclick="document.getElementById('filterSuccess').classList.remove('visible');document.getElementById('filterForm').style.display='flex'">Subscribe again</button>
+        </div>
+      </div>
+    </div></main>{footer()}
+
+    <script>
+      function debounce(fn, ms) {{
+        let t; return function(...a) {{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }};
+      }}
+
+      async function searchEntities(q, apiPath) {{
+        if (!q || q.length < 2) return [];
+        try {{
+          const r = await fetch(`${{apiPath}}?q=${{encodeURIComponent(q)}}`);
+          if (!r.ok) return [];
+          return (await r.json()).results || [];
+        }} catch {{ return []; }}
+      }}
+
+      function makeResultList(results, onSelect) {{
+        const ul = document.createElement('div');
+        results.forEach(item => {{
+          const li = document.createElement('div');
+          li.style.cssText = 'padding:10px 16px;cursor:pointer;border-bottom:1px solid var(--mv-border);font-size:14px';
+          li.onmouseenter = () => li.style.background = 'var(--mv-surface-raised)';
+          li.onmouseleave = () => li.style.background = '';
+          const labelSpan = document.createElement('span');
+          labelSpan.style.color = 'var(--mv-text-primary)';
+          labelSpan.textContent = item.label || item.qid;
+          li.appendChild(labelSpan);
+          if (item.description) {{
+            const descSpan = document.createElement('span');
+            descSpan.style.cssText = 'color:var(--mv-text-tertiary);font-size:12px';
+            descSpan.textContent = ' — ' + item.description;
+            li.appendChild(descSpan);
+          }}
+          li.onclick = () => onSelect(item);
+          ul.appendChild(li);
+        }});
+        return ul;
+      }}
+
+      function setupAutocomplete(inputId, resultsId, qidId, selectedId, apiPath) {{
+        const input = document.getElementById(inputId);
+        const resultsDiv = document.getElementById(resultsId);
+        const qidField = document.getElementById(qidId);
+        const selectedDiv = document.getElementById(selectedId);
+
+        const search = debounce(async (q) => {{
+          const items = await searchEntities(q, apiPath);
+          resultsDiv.innerHTML = '';
+          if (!items.length) {{ resultsDiv.style.display='none'; return; }}
+          resultsDiv.appendChild(makeResultList(items, item => {{
+            qidField.value = item.qid;
+            input.value = item.label || item.qid;
+            selectedDiv.textContent = `Selected: ${{item.label || item.qid}} (${{item.qid}})`;
+            selectedDiv.style.display = 'block';
+            resultsDiv.style.display = 'none';
+          }}));
+          resultsDiv.style.display = 'block';
+        }}, 300);
+
+        input.addEventListener('input', () => {{
+          qidField.value = '';
+          selectedDiv.style.display = 'none';
+          search(input.value.trim());
+        }});
+        document.addEventListener('click', e => {{
+          if (!resultsDiv.contains(e.target) && e.target !== input) resultsDiv.style.display = 'none';
+        }});
+      }}
+
+      setupAutocomplete('occInput', 'occResults', 'occQid', 'occSelected', '/api/filters/occupations');
+      setupAutocomplete('locInput', 'locResults', 'locQid', 'locSelected', '/api/filters/locations');
+
+      async function submitFilterWatch() {{
+        const occ = document.getElementById('occQid').value;
+        const loc = document.getElementById('locQid').value;
+        const email = document.getElementById('emailInput').value.trim();
+        if (!occ && !loc) {{
+          document.getElementById('filterHint').style.color = 'var(--mv-danger)';
+          setTimeout(() => document.getElementById('filterHint').style.color = '', 2000);
+          return;
+        }}
+        if (!email || !email.includes('@')) {{
+          const el = document.getElementById('emailInput');
+          el.style.outline = '1px solid var(--mv-danger)';
+          setTimeout(() => el.style.outline = '', 1500);
+          return;
+        }}
+        const btn = document.getElementById('subscribeBtn');
+        btn.textContent = '...'; btn.disabled = true;
+        try {{
+          const body = {{ wiki_title: '', email }};
+          if (occ) body.filter_occupation_qid = occ;
+          if (loc) body.filter_location_qid = loc;
+          const r = await fetch('/watch', {{ method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(body) }});
+          const d = await r.json();
+          document.getElementById('filterForm').style.display = 'none';
+          const msg = document.getElementById('filterSuccess');
+          msg.classList.add('visible');
+          document.getElementById('filterSuccessText').textContent = d.added ? 'Subscription added!' : 'Already subscribed.';
+        }} catch {{
+          btn.textContent = 'error — try again'; btn.disabled = false;
+        }}
+      }}
+    </script>
+    """
+    return layout(
+        request,
+        "Subscribe by filter — Mortivox",
+        "Get notified when Mortivox detects a death matching your chosen occupation or location filter.",
+        body,
+        "/subscribe/filter",
+    )
+
+
+def _nicho_death_rows(deaths: list[dict]) -> list[dict]:
+    """Return only deaths with a confirmed (non-placeholder) date."""
+    from app.dates import is_confirmed_death  # noqa: PLC0415
+    return [row for row in deaths if is_confirmed_death(row.get("death_date"))]
+
+
+def _nicho_layout(
+    request: Request,
+    title: str,
+    description: str,
+    body_html: str,
+    canonical_path: str,
+    indexable: bool,
+) -> HTMLResponse:
+    noindex_tag = (
+        '<meta name="robots" content="noindex,follow">' if not indexable else ""
+    )
+    site = base_url(request)
+    canonical = f"{site}{canonical_path}"
+    image_url = f"{site}/skull.png?v=3"
+    page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{e(title)}</title>
+  <meta name="description" content="{e(description)}">
+  <link rel="canonical" href="{e(canonical)}">
+  {noindex_tag}
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Mortivox">
+  <meta property="og:title" content="{e(title)}">
+  <meta property="og:description" content="{e(description)}">
+  <meta property="og:url" content="{e(canonical)}">
+  <meta property="og:image" content="{e(image_url)}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{e(title)}">
+  <meta name="twitter:description" content="{e(description)}">
+  <meta name="twitter:image" content="{e(image_url)}">
+  {f'<meta name="google-site-verification" content="{e(GOOGLE_SITE_VERIFICATION)}">' if GOOGLE_SITE_VERIFICATION else ""}
+  <style>{CSS}</style>
+  {analytics_snippet()}
+  {tracking_script()}
+</head>
+<body>{body_html}</body>
+</html>"""
+    return HTMLResponse(content=page)
+
+
+@app.get("/occupation/{qid}", response_class=HTMLResponse)
+def occupation_page(qid: str, request: Request):
+    if not _QID_RE.match(qid):
+        raise HTTPException(400, "invalid QID format")
+    all_deaths = get_deaths_by_occupation_qid(qid)
+    confirmed  = _nicho_death_rows(all_deaths)
+    indexable  = len(confirmed) >= MIN_NICHO_DEATHS
+    # Fetch label from Wikidata (best-effort; fall back to QID)
+    label = _fetch_wikidata_label(qid)
+    display = label or qid
+    page_title = f"{display} deaths — Mortivox"
+    page_desc  = f"Mortivox-detected deaths for the occupation {display} (Wikidata {qid})."
+
+    rows_html = "".join(_nicho_death_item(r) for r in confirmed) or (
+        '<p style="color:var(--mv-text-tertiary);font-size:14px">No confirmed deaths detected for this occupation yet.</p>'
+    )
+    body = f"""
+    <main class="page"><div class="container">
+      {nav()}
+      <h1 class="title">{e(display)} deaths</h1>
+      <p class="lede">{e(page_desc)}</p>
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px">{rows_html}</div>
+      <p style="margin-top:32px;font-size:12px;color:var(--mv-text-quaternary)">
+        Wikidata: <a href="https://www.wikidata.org/wiki/{e(qid)}" rel="noopener" style="color:var(--mv-text-tertiary)">{e(qid)}</a>
+        &middot; <a href="/subscribe/filter?occ={e(qid)}" style="color:var(--mv-text-tertiary)">subscribe to this occupation</a>
+      </p>
+    </div></main>{footer()}"""
+    return _nicho_layout(request, page_title, page_desc, body, f"/occupation/{qid}", indexable)
+
+
+@app.get("/location/{qid}", response_class=HTMLResponse)
+def location_page(qid: str, request: Request):
+    if not _QID_RE.match(qid):
+        raise HTTPException(400, "invalid QID format")
+    all_deaths = get_deaths_by_location_qid(qid)
+    confirmed  = _nicho_death_rows(all_deaths)
+    indexable  = len(confirmed) >= MIN_NICHO_DEATHS
+    label = _fetch_wikidata_label(qid)
+    display = label or qid
+    page_title = f"Deaths in {display} — Mortivox"
+    page_desc  = f"Mortivox-detected deaths in or near {display} (Wikidata {qid})."
+
+    rows_html = "".join(_nicho_death_item(r) for r in confirmed) or (
+        '<p style="color:var(--mv-text-tertiary);font-size:14px">No confirmed deaths detected for this location yet.</p>'
+    )
+    body = f"""
+    <main class="page"><div class="container">
+      {nav()}
+      <h1 class="title">Deaths in {e(display)}</h1>
+      <p class="lede">{e(page_desc)}</p>
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px">{rows_html}</div>
+      <p style="margin-top:32px;font-size:12px;color:var(--mv-text-quaternary)">
+        Wikidata: <a href="https://www.wikidata.org/wiki/{e(qid)}" rel="noopener" style="color:var(--mv-text-tertiary)">{e(qid)}</a>
+        &middot; <a href="/subscribe/filter?loc={e(qid)}" style="color:var(--mv-text-tertiary)">subscribe to this location</a>
+      </p>
+    </div></main>{footer()}"""
+    return _nicho_layout(request, page_title, page_desc, body, f"/location/{qid}", indexable)
+
+
+def _nicho_death_item(row: dict) -> str:
+    slug = title_to_slug(row["wiki_title"])
+    death_date = format_death_date(row.get("death_date"))
+    wiki_link  = f"https://en.wikipedia.org/wiki/{row['wiki_title']}"
+    return f"""
+    <div class="panel" style="display:flex;align-items:center;gap:16px;justify-content:space-between">
+      <div>
+        <a href="/person/{e(slug)}" style="font-size:15px;font-weight:500;color:var(--mv-text-primary)">{e(row["display_name"])}</a>
+        <div style="font-size:12px;color:var(--mv-text-quaternary);margin-top:2px">{e(death_date)}</div>
+      </div>
+      <a href="{e(wiki_link)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--mv-text-tertiary);white-space:nowrap">Wikipedia →</a>
+    </div>"""
+
+
+def _fetch_wikidata_label(qid: str) -> str | None:
+    """Fetch English label for a Wikidata QID. Returns None on failure."""
+    try:
+        import httpx  # noqa: PLC0415
+        r = httpx.get(
+            "https://www.wikidata.org/w/api.php",
+            params={"action": "wbgetentities", "ids": qid, "props": "labels",
+                    "languages": "en", "format": "json"},
+            timeout=5,
+        )
+        entity = r.json().get("entities", {}).get(qid, {})
+        return entity.get("labels", {}).get("en", {}).get("value")
+    except Exception:
+        return None
 
 
 @app.get("/person/{slug}", response_class=HTMLResponse)

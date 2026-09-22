@@ -3,6 +3,7 @@ db.py - Database layer using PostgreSQL (Supabase/Render-compatible).
 Falls back to SQLite for local development if DATABASE_URL is not set.
 """
 
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -12,6 +13,14 @@ log = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 USE_POSTGRES = bool(DATABASE_URL)
+
+# Populated by migrate_schema(); read by get_migration_errors() for /status.
+_migrate_errors: list[str] = []
+
+
+def get_migration_errors() -> list[str]:
+    """Return the list of step names that failed during the last migrate_schema() call."""
+    return list(_migrate_errors)
 
 
 def utcnow():
@@ -77,15 +86,39 @@ def _ph():
     return "%s" if USE_POSTGRES else "?"
 
 
+def _encode_qids(qids: list[str]):
+    """Encode a QID list for storage.
+    Postgres: return the list directly — psycopg2 adapts it to TEXT[].
+    SQLite: return a JSON string."""
+    if USE_POSTGRES:
+        return qids
+    return json.dumps(qids)
+
+
+def _decode_qids(val) -> list[str]:
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    try:
+        result = json.loads(val)
+        return result if isinstance(result, list) else []
+    except Exception:
+        return []
+
+
 def init_db():
     with get_conn() as conn:
         if USE_POSTGRES:
             _exec(conn, """
                 CREATE TABLE IF NOT EXISTS watches (
-                    id         SERIAL PRIMARY KEY,
-                    wiki_title TEXT NOT NULL,
-                    email      TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
+                    id                    SERIAL PRIMARY KEY,
+                    wiki_title            TEXT NOT NULL,
+                    email                 TEXT NOT NULL,
+                    created_at            TEXT NOT NULL,
+                    filter_occupation_qid TEXT,
+                    filter_location_qid   TEXT,
+                    cancel_token          TEXT UNIQUE,
                     UNIQUE(wiki_title, email)
                 )
             """)
@@ -101,13 +134,16 @@ def init_db():
             """)
             _exec(conn, """
                 CREATE TABLE IF NOT EXISTS deaths (
-                    id           SERIAL PRIMARY KEY,
-                    wiki_title   TEXT UNIQUE NOT NULL,
-                    display_name TEXT NOT NULL,
-                    death_date   TEXT,
-                    detected_at  TEXT NOT NULL,
-                    wiki_url     TEXT NOT NULL,
-                    edit_url     TEXT
+                    id               SERIAL PRIMARY KEY,
+                    wiki_title       TEXT UNIQUE NOT NULL,
+                    display_name     TEXT NOT NULL,
+                    death_date       TEXT,
+                    detected_at      TEXT NOT NULL,
+                    wiki_url         TEXT NOT NULL,
+                    edit_url         TEXT,
+                    occupation_qids  TEXT[] DEFAULT '{}' NOT NULL,
+                    location_qids    TEXT[] DEFAULT '{}' NOT NULL,
+                    wiki_qid         TEXT
                 )
             """)
             _exec(conn, """
@@ -124,10 +160,13 @@ def init_db():
         else:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS watches (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    wiki_title  TEXT NOT NULL,
-                    email       TEXT NOT NULL,
-                    created_at  TEXT NOT NULL,
+                    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    wiki_title            TEXT NOT NULL,
+                    email                 TEXT NOT NULL,
+                    created_at            TEXT NOT NULL,
+                    filter_occupation_qid TEXT,
+                    filter_location_qid   TEXT,
+                    cancel_token          TEXT UNIQUE,
                     UNIQUE(wiki_title, email)
                 );
                 CREATE TABLE IF NOT EXISTS monitored_titles (
@@ -139,13 +178,16 @@ def init_db():
                     created_at   TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS deaths (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    wiki_title   TEXT UNIQUE NOT NULL,
-                    display_name TEXT NOT NULL,
-                    death_date   TEXT,
-                    detected_at  TEXT NOT NULL,
-                    wiki_url     TEXT NOT NULL,
-                    edit_url     TEXT
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    wiki_title       TEXT UNIQUE NOT NULL,
+                    display_name     TEXT NOT NULL,
+                    death_date       TEXT,
+                    detected_at      TEXT NOT NULL,
+                    wiki_url         TEXT NOT NULL,
+                    edit_url         TEXT,
+                    occupation_qids  TEXT DEFAULT '[]',
+                    location_qids    TEXT DEFAULT '[]',
+                    wiki_qid         TEXT
                 );
                 CREATE TABLE IF NOT EXISTS watcher_health (
                     key                 TEXT PRIMARY KEY,
@@ -218,25 +260,102 @@ def seed_watched(titles: list[dict]) -> None:
                     birth_year = COALESCE(excluded.birth_year, monitored_titles.birth_year)
             """, rows)
 
-def add_watch(wiki_title: str, email: str) -> bool:
+def add_watch(
+    wiki_title: str,
+    email: str,
+    filter_occupation_qid: str | None = None,
+    filter_location_qid: str | None = None,
+) -> bool:
+    if "\x00" in wiki_title:
+        raise ValueError("wiki_title contains NUL bytes (\\x00) and is not valid")
     wiki_title = wiki_title.strip().replace(" ", "_")
     email = email.strip().lower()
-    add_watched(wiki_title, wiki_title.replace("_", " "), "User-monitored page", None)
+    if wiki_title:
+        add_watched(wiki_title, wiki_title.replace("_", " "), "User-monitored page", None)
     with get_conn() as conn:
         if USE_POSTGRES:
             cur = _exec(conn, """
-                INSERT INTO watches (wiki_title, email, created_at)
-                VALUES (%s, %s, %s)
+                INSERT INTO watches (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (wiki_title, email) DO NOTHING
                 RETURNING id
-            """, (wiki_title, email, utcnow()))
+            """, (wiki_title, email, utcnow(), filter_occupation_qid, filter_location_qid))
             return _fetchone(cur) is not None
         else:
             cur = _exec(conn, """
-                INSERT OR IGNORE INTO watches (wiki_title, email, created_at)
-                VALUES (?, ?, ?)
-            """, (wiki_title, email, utcnow()))
+                INSERT OR IGNORE INTO watches (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid)
+                VALUES (?, ?, ?, ?, ?)
+            """, (wiki_title, email, utcnow(), filter_occupation_qid, filter_location_qid))
             return cur.rowcount > 0
+
+
+def remove_watch(wiki_title: str, email: str) -> bool:
+    """Remove a subscription. Returns True if a row was deleted."""
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    email = email.strip().lower()
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn,
+            f"DELETE FROM watches WHERE wiki_title={ph} AND email={ph}",
+            (wiki_title, email),
+        )
+        return cur.rowcount > 0
+
+
+def add_watch_with_token(
+    wiki_title: str,
+    email: str,
+    filter_occupation_qid: str | None = None,
+    filter_location_qid: str | None = None,
+) -> str:
+    """Add a watch subscription and return a unique cancellation token (>= 32 chars).
+    Equivalent to add_watch() but generates and stores a cancel_token."""
+    import secrets
+    token = secrets.token_urlsafe(32)  # 43 URL-safe chars
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    email = email.strip().lower()
+    now = utcnow()
+    with get_conn() as conn:
+        ph = _ph()
+        if USE_POSTGRES:
+            _exec(conn, f"""
+                INSERT INTO watches
+                    (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid, cancel_token)
+                VALUES ({ph},{ph},{ph},{ph},{ph},{ph})
+                ON CONFLICT (wiki_title, email) DO UPDATE SET cancel_token = EXCLUDED.cancel_token
+            """, (wiki_title, email, now, filter_occupation_qid, filter_location_qid, token))
+        else:
+            _exec(conn, """
+                INSERT OR REPLACE INTO watches
+                    (wiki_title, email, created_at, filter_occupation_qid, filter_location_qid, cancel_token)
+                VALUES (?,?,?,?,?,?)
+            """, (wiki_title, email, now, filter_occupation_qid, filter_location_qid, token))
+    return token
+
+
+def cancel_watch_by_token(token: str) -> bool:
+    """Cancel a watch subscription identified by its cancel_token.
+    Uses hmac.compare_digest for constant-time comparison.
+    Returns True if found and deleted; False if token not found or already used."""
+    import hmac
+
+    token_bytes = token.encode()
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"SELECT cancel_token FROM watches WHERE cancel_token={ph}", (token,))
+        row = _fetchone(cur)
+
+    if row is None:
+        return False
+
+    stored_bytes = (row["cancel_token"] or "").encode()
+    if not hmac.compare_digest(stored_bytes, token_bytes):
+        return False
+
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn, f"DELETE FROM watches WHERE cancel_token={ph}", (token,))
+    return True
 
 
 def get_emails_for(wiki_title: str) -> list[str]:
@@ -245,6 +364,39 @@ def get_emails_for(wiki_title: str) -> list[str]:
         cur = _exec(conn, f"SELECT email FROM watches WHERE wiki_title={ph}", (wiki_title,))
         rows = _fetchall(cur)
     return [r["email"] for r in rows]
+
+
+def get_cancel_tokens_for_wiki(wiki_title: str) -> dict[str, str | None]:
+    """Return {email: cancel_token} for all watches on wiki_title."""
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"SELECT email, cancel_token FROM watches WHERE wiki_title={ph}", (wiki_title,))
+        rows = _fetchall(cur)
+    return {r["email"]: r.get("cancel_token") for r in rows}
+
+
+def get_or_create_cancel_token(wiki_title: str, email: str) -> str:
+    """Return the existing cancel_token for a watch, generating one if absent."""
+    import secrets
+    wiki_title = wiki_title.strip().replace(" ", "_")
+    email = email.strip().lower()
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn,
+            f"SELECT cancel_token FROM watches WHERE wiki_title={ph} AND email={ph}",
+            (wiki_title, email),
+        )
+        row = _fetchone(cur)
+    if row and row.get("cancel_token"):
+        return row["cancel_token"]
+    token = secrets.token_urlsafe(32)
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn,
+            f"UPDATE watches SET cancel_token={ph} WHERE wiki_title={ph} AND email={ph}",
+            (token, wiki_title, email),
+        )
+    return token
 
 
 def get_all_watched_titles() -> set[str]:
@@ -277,6 +429,17 @@ def get_watch_count_for_title(wiki_title: str) -> int:
         cur = _exec(conn, f"SELECT COUNT(DISTINCT email) AS n FROM watches WHERE wiki_title={ph}", (wiki_title,))
         row = _fetchone(cur)
     return row["n"] if row else 0
+
+
+def get_filter_watches() -> list[dict]:
+    """Return all watches that have at least one filter QID set."""
+    with get_conn() as conn:
+        cur = _exec(conn, """
+            SELECT * FROM watches
+            WHERE filter_occupation_qid IS NOT NULL
+               OR filter_location_qid   IS NOT NULL
+        """)
+        return _fetchall(cur)
 
 
 def get_watch_counts() -> dict:
@@ -348,6 +511,21 @@ def is_already_dead(wiki_title: str) -> bool:
     return get_death_for_title(wiki_title) is not None
 
 
+def is_already_watched(wiki_title: str) -> bool:
+    """Return True if wiki_title appears in monitored_titles or watches.
+    Used by the global ingestor to skip people already handled by the watcher."""
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"""
+            SELECT 1 FROM (
+                SELECT wiki_title FROM monitored_titles WHERE wiki_title={ph}
+                UNION
+                SELECT wiki_title FROM watches WHERE wiki_title={ph} AND wiki_title != ''
+            ) x LIMIT 1
+        """, (wiki_title, wiki_title))
+        return _fetchone(cur) is not None
+
+
 def get_death_for_title(wiki_title: str) -> dict | None:
     with get_conn() as conn:
         ph = _ph()
@@ -370,6 +548,342 @@ def get_death_count() -> int:
         cur = _exec(conn, "SELECT COUNT(*) AS n FROM deaths")
         row = _fetchone(cur)
     return row["n"] if row else 0
+
+
+def get_deaths_by_occupation_qid(qid: str) -> list[dict]:
+    """Return deaths whose occupation_qids array contains qid.
+    Postgres: uses @> containment operator with GIN index.
+    SQLite: Python-side filter (no GIN support)."""
+    with get_conn() as conn:
+        if USE_POSTGRES:
+            cur = _exec(conn,
+                "SELECT * FROM deaths WHERE occupation_qids @> ARRAY[%s]::TEXT[] "
+                "ORDER BY detected_at DESC",
+                (qid,))
+            return _fetchall(cur)
+        cur = _exec(conn, "SELECT * FROM deaths ORDER BY detected_at DESC")
+        rows = _fetchall(cur)
+    return [r for r in rows if qid in _decode_qids(r.get("occupation_qids"))]
+
+
+def get_deaths_by_location_qid(qid: str) -> list[dict]:
+    """Return deaths whose location_qids array contains qid.
+    Postgres: uses @> containment operator with GIN index.
+    SQLite: Python-side filter (no GIN support)."""
+    with get_conn() as conn:
+        if USE_POSTGRES:
+            cur = _exec(conn,
+                "SELECT * FROM deaths WHERE location_qids @> ARRAY[%s]::TEXT[] "
+                "ORDER BY detected_at DESC",
+                (qid,))
+            return _fetchall(cur)
+        cur = _exec(conn, "SELECT * FROM deaths ORDER BY detected_at DESC")
+        rows = _fetchall(cur)
+    return [r for r in rows if qid in _decode_qids(r.get("location_qids"))]
+
+
+def get_filter_emails_for_death(occupation_qids: list[str], location_qids: list[str]) -> list[str]:
+    """Return emails of filter-watches whose filters match the given arrays.
+    Postgres: SQL @> containment (uses GIN index on watches filters indirectly).
+    SQLite: Python-side match via match_watch loop (called from filters.py)."""
+    if not USE_POSTGRES:
+        return []  # SQLite caller falls back to Python loop in filters.py
+    with get_conn() as conn:
+        cur = _exec(conn, """
+            SELECT email FROM watches
+            WHERE (filter_occupation_qid IS NOT NULL OR filter_location_qid IS NOT NULL)
+              AND (filter_occupation_qid IS NULL
+                   OR %s::TEXT[] @> ARRAY[filter_occupation_qid]::TEXT[])
+              AND (filter_location_qid IS NULL
+                   OR %s::TEXT[] @> ARRAY[filter_location_qid]::TEXT[])
+        """, (occupation_qids, location_qids))
+        rows = _fetchall(cur)
+    return [r["email"] for r in rows]
+
+
+def update_death_enrichment(wiki_title: str, occupation_qids: list, location_qids: list) -> None:
+    """Persist Wikidata ancestor arrays to an existing deaths row.
+    No-op if wiki_title is not in the deaths table."""
+    enc_occ = _encode_qids(occupation_qids)
+    enc_loc = _encode_qids(location_qids)
+    with get_conn() as conn:
+        ph = _ph()
+        _exec(conn,
+              f"UPDATE deaths SET occupation_qids={ph}, location_qids={ph} WHERE wiki_title={ph}",
+              (enc_occ, enc_loc, wiki_title))
+
+
+def has_death_by_qid(wiki_qid: str) -> bool:
+    """Return True if a deaths row with this Wikidata QID already exists."""
+    with get_conn() as conn:
+        ph = _ph()
+        cur = _exec(conn, f"SELECT 1 FROM deaths WHERE wiki_qid={ph}", (wiki_qid,))
+        return _fetchone(cur) is not None
+
+
+def upsert_global_death(
+    wiki_qid: str,
+    wiki_title: str,
+    display_name: str,
+    death_date: str | None,
+    wiki_url: str,
+) -> bool:
+    """Insert a globally-ingested confirmed death.  Returns True if new row was
+    created.  Idempotent: subsequent calls for the same wiki_qid are no-ops."""
+    now = utcnow()
+    with get_conn() as conn:
+        ph = _ph()
+        if USE_POSTGRES:
+            cur = _exec(conn, f"""
+                INSERT INTO deaths
+                    (wiki_qid, wiki_title, display_name, death_date, detected_at, wiki_url)
+                VALUES ({ph},{ph},{ph},{ph},{ph},{ph})
+                ON CONFLICT (wiki_title) DO UPDATE
+                    SET wiki_qid = EXCLUDED.wiki_qid
+                    WHERE deaths.wiki_qid IS NULL
+                RETURNING id
+            """, (wiki_qid, wiki_title, display_name, death_date, now, wiki_url))
+            return _fetchone(cur) is not None
+        else:
+            cur = _exec(conn, """
+                INSERT OR IGNORE INTO deaths
+                    (wiki_qid, wiki_title, display_name, death_date, detected_at, wiki_url)
+                VALUES (?,?,?,?,?,?)
+            """, (wiki_qid, wiki_title, display_name, death_date, now, wiki_url))
+            return cur.rowcount > 0
+
+
+def get_death_with_enrichment(wiki_title: str) -> dict | None:
+    """Return a deaths row with occupation_qids/location_qids decoded to lists."""
+    row = get_death_for_title(wiki_title)
+    if row is None:
+        return None
+    row = dict(row)
+    row["occupation_qids"] = _decode_qids(row.get("occupation_qids"))
+    row["location_qids"]   = _decode_qids(row.get("location_qids"))
+    return row
+
+
+def migrate_schema() -> None:
+    """Idempotent, additive schema migration. Safe to call on every startup.
+
+    Each step runs in its own transaction; a failure in one step does not
+    abort the others.  On Postgres, holds pg_advisory_lock(987654321) for
+    the duration so two app instances starting simultaneously do not race.
+    """
+    if not USE_POSTGRES:
+        _migrate_schema_sqlite()
+        return
+
+    import psycopg2
+
+    lock_conn = psycopg2.connect(DATABASE_URL)
+    lock_conn.autocommit = True
+    try:
+        lock_conn.cursor().execute("SELECT pg_advisory_lock(987654321)")
+    except Exception as exc:
+        lock_conn.close()
+        raise RuntimeError(f"migrate_schema: advisory lock failed: {exc}") from exc
+
+    try:
+        _migrate_schema_postgres()
+    finally:
+        try:
+            lock_conn.cursor().execute("SELECT pg_advisory_unlock(987654321)")
+        except Exception:
+            pass
+        lock_conn.close()
+
+
+def _pg_col_udt(conn, table: str, col: str) -> str | None:
+    """Return udt_name for a Postgres column ('text', '_text', …) or None."""
+    cur = _exec(conn, """
+        SELECT udt_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
+    """, (table, col))
+    row = _fetchone(cur)
+    return row["udt_name"] if row else None
+
+
+def _pg_col_has_unique(conn, table: str, col: str) -> bool:
+    """Return True if the column already carries a UNIQUE constraint."""
+    cur = _exec(conn, """
+        SELECT 1
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema    = kcu.table_schema
+        WHERE tc.table_schema    = 'public'
+          AND tc.table_name      = %s
+          AND tc.constraint_type = 'UNIQUE'
+          AND kcu.column_name    = %s
+        LIMIT 1
+    """, (table, col))
+    return _fetchone(cur) is not None
+
+
+def _migrate_schema_postgres() -> None:
+    global _migrate_errors
+    import secrets as _sec
+    errors: list[str] = []
+
+    # ── Step 1: ADD COLUMN IF NOT EXISTS (one transaction per column) ────────
+    columns = [
+        ("watches", "filter_occupation_qid", "TEXT"),
+        ("watches", "filter_location_qid",   "TEXT"),
+        ("watches", "cancel_token",          "TEXT"),
+        ("deaths",  "occupation_qids",        "TEXT DEFAULT '[]'"),
+        ("deaths",  "location_qids",          "TEXT DEFAULT '[]'"),
+        ("deaths",  "wiki_qid",               "TEXT"),
+    ]
+    for table, col, col_def in columns:
+        try:
+            with get_conn() as conn:
+                _exec(conn, f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_def}")
+        except Exception as exc:
+            step = f"ADD {table}.{col}"
+            log.error("migrate_schema: %s failed: %r", step, exc)
+            errors.append(step)
+
+    # ── Step 2: Convert TEXT → TEXT[] only when column is still plain TEXT ───
+    for col in ("occupation_qids", "location_qids"):
+        try:
+            with get_conn() as conn:
+                udt = _pg_col_udt(conn, "deaths", col)
+                if udt == "text":
+                    # Drop the TEXT default before type conversion; Postgres can't
+                    # cast the string literal '[]' to TEXT[] during ALTER TYPE.
+                    _exec(conn, f"ALTER TABLE deaths ALTER COLUMN {col} DROP DEFAULT")
+                    # Normalize stored values to Postgres array literal format so
+                    # the simple ::TEXT[] cast works (Postgres forbids subqueries
+                    # in ALTER TABLE ... USING expressions).
+                    # '[]' / NULL → '{}'  |  '["Q1","Q2"]' → '{Q1,Q2}'  |  already-'{…}' → unchanged
+                    _exec(conn, f"""
+                        UPDATE deaths SET {col} = CASE
+                            WHEN {col} IS NULL OR trim({col}) IN ('', '[]', '{{}}')
+                                THEN '{{}}'
+                            WHEN {col} LIKE '[%%'
+                                THEN '{{' || replace(replace(trim({col}, '[]'), '"', ''), ' ', '') || '}}'
+                            ELSE {col}
+                        END
+                    """)
+                    _exec(conn, f"""
+                        ALTER TABLE deaths ALTER COLUMN {col}
+                        TYPE TEXT[]
+                        USING {col}::TEXT[]
+                    """)
+                    log.info("migrate_schema: deaths.%s TEXT → TEXT[] done", col)
+        except Exception as exc:
+            step = f"TYPE deaths.{col}"
+            log.error("migrate_schema: %s failed: %r", step, exc)
+            errors.append(step)
+
+    # ── Step 3: Set TEXT[] defaults, backfill NULLs, and enforce NOT NULL ───────
+    for col in ("occupation_qids", "location_qids"):
+        try:
+            with get_conn() as conn:
+                if _pg_col_udt(conn, "deaths", col) == "_text":
+                    # Backfill any NULLs not covered by the USING clause in Step 2.
+                    _exec(conn,
+                          f"UPDATE deaths SET {col} = ARRAY[]::TEXT[] WHERE {col} IS NULL")
+                    _exec(conn,
+                          f"ALTER TABLE deaths ALTER COLUMN {col} SET DEFAULT '{{}}'::TEXT[]")
+                    _exec(conn,
+                          f"ALTER TABLE deaths ALTER COLUMN {col} SET NOT NULL")
+        except Exception as exc:
+            log.warning("migrate_schema: DEFAULT/NOT NULL %s non-critical: %r", col, exc)
+
+    # ── Step 4: GIN indexes and unique index on wiki_qid ─────────────────────
+    # GIN indexes require TEXT[] columns; skip creation if TYPE conversion failed.
+    for idx_name, col, stmt in [
+        ("idx_deaths_occupation_qids", "occupation_qids",
+         "CREATE INDEX IF NOT EXISTS idx_deaths_occupation_qids ON deaths USING GIN (occupation_qids)"),
+        ("idx_deaths_location_qids", "location_qids",
+         "CREATE INDEX IF NOT EXISTS idx_deaths_location_qids   ON deaths USING GIN (location_qids)"),
+    ]:
+        try:
+            with get_conn() as conn:
+                if _pg_col_udt(conn, "deaths", col) == "_text":
+                    _exec(conn, stmt)
+        except Exception as exc:
+            step = f"INDEX: {idx_name}"
+            log.error("migrate_schema: %s failed: %r", step, exc)
+            errors.append(step)
+
+    try:
+        with get_conn() as conn:
+            _exec(conn,
+                  "CREATE UNIQUE INDEX IF NOT EXISTS idx_deaths_wiki_qid"
+                  " ON deaths (wiki_qid) WHERE wiki_qid IS NOT NULL")
+    except Exception as exc:
+        step = "INDEX: idx_deaths_wiki_qid"
+        log.error("migrate_schema: %s failed: %r", step, exc)
+        errors.append(step)
+
+    # ── Step 5: Unique index on cancel_token (legacy schema only) ────────────
+    try:
+        with get_conn() as conn:
+            if not _pg_col_has_unique(conn, "watches", "cancel_token"):
+                _exec(conn, """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_watches_cancel_token
+                    ON watches (cancel_token)
+                    WHERE cancel_token IS NOT NULL
+                """)
+    except Exception as exc:
+        log.warning("migrate_schema: UNIQUE cancel_token non-critical: %r", exc)
+
+    # ── Step 6: Backfill cancel_token for NULL rows ───────────────────────────
+    try:
+        with get_conn() as conn:
+            cur = _exec(conn, "SELECT id FROM watches WHERE cancel_token IS NULL")
+            rows = _fetchall(cur)
+        for row in rows:
+            token = _sec.token_urlsafe(32)
+            with get_conn() as conn:
+                _exec(conn,
+                      "UPDATE watches SET cancel_token = %s WHERE id = %s AND cancel_token IS NULL",
+                      (token, row["id"]))
+        if rows:
+            log.info("migrate_schema: backfilled cancel_token for %d watches", len(rows))
+    except Exception as exc:
+        step = "BACKFILL cancel_token"
+        log.error("migrate_schema: %s failed: %r", step, exc)
+        errors.append(step)
+
+    _migrate_errors = errors  # persist for /status schema_ok field
+    if errors:
+        log.warning("migrate_schema: %d step(s) had errors: %s", len(errors), "; ".join(errors))
+
+
+def _migrate_schema_sqlite() -> None:
+    """SQLite migration: add missing columns and backfill cancel_token."""
+    import secrets as _sec
+
+    columns = [
+        ("watches", "filter_occupation_qid", "TEXT"),
+        ("watches", "filter_location_qid",   "TEXT"),
+        ("watches", "cancel_token",          "TEXT"),
+        ("deaths",  "occupation_qids",        "TEXT DEFAULT '[]'"),
+        ("deaths",  "location_qids",          "TEXT DEFAULT '[]'"),
+        ("deaths",  "wiki_qid",               "TEXT"),
+    ]
+    with get_conn() as conn:
+        for table, col, col_def in columns:
+            cur = conn.execute(f"PRAGMA table_info({table})")
+            existing = {r[1] for r in cur.fetchall()}
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+
+    with get_conn() as conn:
+        cur = conn.execute("SELECT id FROM watches WHERE cancel_token IS NULL")
+        ids = [r[0] for r in cur.fetchall()]
+    for row_id in ids:
+        token = _sec.token_urlsafe(32)
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE watches SET cancel_token = ? WHERE id = ? AND cancel_token IS NULL",
+                (token, row_id),
+            )
 
 
 # ── Watcher healthcheck ──────────────────────────────────────────────────────

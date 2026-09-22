@@ -80,3 +80,67 @@ def test_no_python_traceback_visible_on_any_main_page(live_server, page):
         assert "Traceback (most recent call last)" not in page.content(), (
             f"Unhandled exception leaked into rendered HTML on {path}"
         )
+
+
+def test_xss_safe_autocomplete_label(live_server, page):
+    """Autocomplete labels must be rendered with textContent (not innerHTML).
+    A malicious label injected via a mocked /api/filters/occupations response
+    must not execute as HTML — the onerror handler must never fire and the
+    literal '<img' text must appear in the results list."""
+    js_errors = []
+    page.on("pageerror", lambda exc: js_errors.append(str(exc)))
+
+    page.goto(live_server + "/subscribe/filter")
+
+    # Intercept the backend proxy endpoint (JS now calls /api/filters/occupations
+    # instead of Wikidata directly — local URLs are intercepted reliably).
+    malicious_label = "<img src=x onerror=\"window._xss_fired=true\">"
+    page.route(
+        "**/api/filters/occupations*",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"results":[{"qid":"Q1","label":"'
+                + malicious_label.replace('"', '\\"')
+                + '","description":"test"}]}'
+            ),
+        ),
+    )
+
+    # Type in the occupation field to trigger the autocomplete
+    page.fill("#occInput", "test")
+    page.wait_for_timeout(500)  # debounce (300 ms) + fetch
+
+    # The malicious label must have been rendered as plain text (textContent),
+    # not as HTML — so the onerror handler must never have fired.
+    xss_fired = page.evaluate("window._xss_fired")
+    assert xss_fired is None or xss_fired is False, (
+        "XSS payload executed! makeResultList uses innerHTML instead of textContent"
+    )
+    assert js_errors == [], f"Unexpected JS errors: {js_errors}"
+
+    # The result item should appear as plain text containing the literal < character
+    # (verifying the content was inserted as text, not parsed as HTML).
+    page.wait_for_selector("#occResults div", timeout=2000)
+    result_text = page.inner_text("#occResults")
+    assert "<img" in result_text, (
+        "Malicious label must appear as plain text (with literal <), not as rendered HTML"
+    )
+
+
+def test_cancel_page_returns_200(live_server, page):
+    """GET /cancel must return a confirmation page (200), not a 404.
+    Email prefetch by clients must never accidentally cancel subscriptions."""
+    page.goto(live_server + "/cancel?token=fake_test_token_xyz")
+    assert page.url.endswith("/cancel?token=fake_test_token_xyz") or "/cancel" in page.url
+    # Should be a 200 page with cancel-related content
+    content = page.content().lower()
+    assert "cancel" in content or "subscription" in content
+
+
+def test_unsubscribe_page_returns_200(live_server, page):
+    """/unsubscribe must return a usable form page, not a 404."""
+    page.goto(live_server + "/unsubscribe")
+    content = page.content().lower()
+    assert "unsubscribe" in content or "subscription" in content

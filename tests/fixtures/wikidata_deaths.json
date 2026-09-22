@@ -1,0 +1,44 @@
+{
+  "deaths": [
+    {
+      "qid": "Q_CONFIRMED_DEATH",
+      "wiki_title": "Test_Person_Confirmed",
+      "display_name": "Test Person Confirmed",
+      "death_date_raw": "2026-01-15T00:00:00Z",
+      "categories": ["Category:1940 births", "Category:2026 deaths"],
+      "wikitext": "{{Infobox person\n| name = Test Person Confirmed\n| birth_date = 1940\n| death_date = {{Death date|2026|01|15}}\n}}\nTest Person Confirmed was a notable figure."
+    },
+    {
+      "qid": "Q_LIVING_PERSON",
+      "wiki_title": "Test_Living_Person",
+      "display_name": "Test Living Person",
+      "death_date_raw": "2026-01-15T00:00:00Z",
+      "categories": ["Category:Living people", "Category:1970 births"],
+      "wikitext": "{{Infobox person\n| name = Test Living Person\n| birth_date = 1970\n| death_date = <!-- {{Death date and age|YYYY|MM|DD|1970|01|01}} -->\n}}\nTest Living Person is a living person."
+    },
+    {
+      "qid": "Q_NO_WIKITEXT",
+      "wiki_title": "Test_No_Wikitext",
+      "display_name": "Test No Wikitext",
+      "death_date_raw": "2026-01-15T00:00:00Z",
+      "categories": ["Category:2026 deaths"],
+      "wikitext": ""
+    },
+    {
+      "qid": "Q_BAD_DEATH_DATE",
+      "wiki_title": "Test_Bad_Date",
+      "display_name": "Test Bad Date",
+      "death_date_raw": "2026-01-15T00:00:00Z",
+      "categories": ["Category:2026 deaths"],
+      "wikitext": "{{Infobox person\n| name = Test Bad Date\n| death_date = <!-- {{Death date and age|YYYY|MM|DD|YYYY|MM|DD}} (DEATH date then BIRTH date) -->\n}}\nStub article."
+    },
+    {
+      "qid": "Q_DUPLICATE_QID",
+      "wiki_title": "Test_Duplicate",
+      "display_name": "Test Duplicate",
+      "death_date_raw": "2026-01-15T00:00:00Z",
+      "categories": ["Category:2026 deaths"],
+      "wikitext": "{{Infobox person\n| death_date = {{Death date|2026|01|15}}\n}}"
+    }
+  ]
+}

@@ -15,7 +15,7 @@ import sseclient
 
 from app.db import (
     get_all_watched_titles,
-    get_emails_for,
+    get_cancel_tokens_for_wiki,
     is_already_dead,
     record_death,
     record_watcher_error,
@@ -24,6 +24,7 @@ from app.db import (
     record_watcher_start,
 )
 from app.email import send_death_notification as send_death_email
+from app.filters import enrich_death, get_notifiable_emails_for_death
 from app.observability import setup_logging, setup_sentry
 
 setup_logging()
@@ -76,7 +77,18 @@ def extract_death_date(wikitext: str) -> str | None:
                 # no real date data (a genuine date always has a 4-digit
                 # year), it isn't an actual death date.
                 real_content = _HTML_COMMENT_RE.sub("", val).strip()
-                if not real_content or not re.search(r"\d{4}", real_content):
+                if not real_content:
+                    continue
+                # If the value contains a {{Death date...}} template, require
+                # the first parameter to be a valid 4-digit year. Without this
+                # check, {{Death date and age|?|1|15|1930|5|31}} would pass
+                # because "1930" (the birth year) satisfies \d{4}, but the
+                # death year itself is "?" — not a real confirmed date.
+                if re.search(r"\{\{\s*[Dd]eath date", real_content):
+                    if not re.search(r"\{\{\s*[Dd]eath date[^|{]*\|\s*\d{4}\b",
+                                     real_content):
+                        continue
+                elif not re.search(r"\d{4}", real_content):
                     continue
                 return val
     except Exception:
@@ -143,10 +155,17 @@ def run():
                 is_new = record_death(title, display_name, death_date, edit_url)
                 if is_new:
                     log.info(f"DEATH DETECTED: {display_name} — {death_date}")
-                    emails = get_emails_for(title)
+                    enrichment = enrich_death(title)
+                    death_record = {
+                        "occupation_qids": enrichment["occupation_qids"],
+                        "location_qids":   enrichment["location_qids"],
+                        "death_date":      death_date,
+                    }
+                    all_emails = list(get_notifiable_emails_for_death(title, death_record))
+                    tokens = get_cancel_tokens_for_wiki(title)
                     wiki_url = f"https://en.wikipedia.org/wiki/{title}"
                     sent = 0
-                    for email in emails:
+                    for email in all_emails:
                         if send_death_email(
                             to_email=email,
                             person_name=display_name,
@@ -154,9 +173,10 @@ def run():
                             death_date=death_date,
                             wiki_url=wiki_url,
                             edit_url=edit_url,
+                            cancel_token=tokens.get(email),
                         ):
                             sent += 1
-                    log.info(f"Notified {sent}/{len(emails)} subscriber(s)")
+                    log.info(f"Notified {sent}/{len(all_emails)} subscriber(s)")
 
                 count += 1
                 if count % REFRESH_EVERY == 0:

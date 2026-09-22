@@ -1,0 +1,133 @@
+name: ObituaryWatch — Performance Benchmark
+
+# Runs on manual dispatch or nightly — NOT part of the blocking CI.
+# Seeds 300k deaths + 50k watches and captures EXPLAIN ANALYZE plans.
+# Results are uploaded as workflow artifacts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      deaths_count:
+        description: 'Number of synthetic deaths to seed'
+        required: false
+        default: '300000'
+      watches_count:
+        description: 'Number of synthetic watches to seed'
+        required: false
+        default: '50000'
+      drop_seed:
+        description: 'Drop existing seed rows before inserting'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+  schedule:
+    # Nightly at 03:00 UTC — only if PERF_ENABLED is true
+    - cron: '0 3 * * *'
+
+jobs:
+  benchmark:
+    if: github.event_name == 'workflow_dispatch' || vars.PERF_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: mortivox
+          POSTGRES_PASSWORD: mortivox
+          POSTGRES_DB: mortivox_perf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://mortivox:mortivox@localhost:5432/mortivox_perf
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Initialize DB and run migrations
+        run: |
+          python - <<'EOF'
+          from app.db import init_db, migrate_schema
+          init_db()
+          migrate_schema()
+          print("DB ready")
+          EOF
+
+      - name: Seed data
+        run: |
+          python tests/perf/seed.py \
+            --deaths-count ${{ github.event.inputs.deaths_count || '300000' }} \
+            --watches-count ${{ github.event.inputs.watches_count || '50000' }} \
+            ${{ github.event.inputs.drop_seed == 'true' && '--drop' || '' }} \
+            --explain 2>&1 | tee perf-explain.txt
+
+      - name: Run timed queries (p50 / p95)
+        run: |
+          python - <<'EOF' | tee perf-timings.txt
+          import os, time, statistics, psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          cur = conn.cursor()
+
+          def measure(label, sql, params=None, rounds=20):
+              times = []
+              for _ in range(rounds):
+                  t0 = time.perf_counter()
+                  cur.execute(sql, params)
+                  cur.fetchall()
+                  times.append((time.perf_counter() - t0) * 1000)
+              times.sort()
+              p50 = statistics.median(times)
+              p95 = times[int(len(times) * 0.95)]
+              print(f"{label}: p50={p50:.1f}ms p95={p95:.1f}ms (n={rounds})")
+
+          measure(
+              "gin_occupation_match",
+              "SELECT wiki_title FROM deaths WHERE occupation_qids @> ARRAY['Q177220']::TEXT[] LIMIT 100",
+          )
+          measure(
+              "nicho_page_query",
+              "SELECT wiki_title, display_name, death_date, detected_at "
+              "FROM deaths WHERE occupation_qids @> ARRAY['Q177220']::TEXT[] "
+              "ORDER BY detected_at DESC LIMIT 50",
+          )
+          measure(
+              "filter_match_combined",
+              "SELECT email FROM watches "
+              "WHERE (filter_occupation_qid IS NOT NULL OR filter_location_qid IS NOT NULL) "
+              "  AND (filter_occupation_qid IS NULL "
+              "       OR %s::TEXT[] @> ARRAY[filter_occupation_qid]::TEXT[]) "
+              "  AND (filter_location_qid IS NULL "
+              "       OR %s::TEXT[] @> ARRAY[filter_location_qid]::TEXT[])",
+              (["Q177220","Q36180"], ["Q60","Q30"]),
+          )
+
+          conn.close()
+          EOF
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ github.run_number }}
+          path: |
+            perf-explain.txt
+            perf-timings.txt
+          retention-days: 30
