@@ -84,24 +84,26 @@ def test_no_python_traceback_visible_on_any_main_page(live_server, page):
 
 def test_xss_safe_autocomplete_label(live_server, page):
     """Autocomplete labels must be rendered with textContent (not innerHTML).
-    A malicious label injected via a mocked /api/filters/occupations response
-    must not execute as HTML — the onerror handler must never fire and the
-    literal '<img' text must appear in the results list."""
+    A malicious label injected via a mocked Wikidata response must not
+    execute as HTML — the onerror handler must never fire and the literal
+    '<img' text must appear in the results list."""
     js_errors = []
     page.on("pageerror", lambda exc: js_errors.append(str(exc)))
 
     page.goto(live_server + "/subscribe/filter")
 
-    # Intercept the backend proxy endpoint (JS now calls /api/filters/occupations
-    # instead of Wikidata directly — local URLs are intercepted reliably).
+    # Intercept the real Wikidata endpoint the browser calls directly
+    # (client-side, origin=* — the backend proxy is not used any more since
+    # Render's outbound IPs are blocked by Wikidata in production).
+    # Playwright can intercept third-party URLs the same way as local ones.
     malicious_label = "<img src=x onerror=\"window._xss_fired=true\">"
     page.route(
-        "**/api/filters/occupations*",
+        "**wikidata.org/w/api.php*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
             body=(
-                '{"results":[{"qid":"Q1","label":"'
+                '{"search":[{"id":"Q1","label":"'
                 + malicious_label.replace('"', '\\"')
                 + '","description":"test"}]}'
             ),
