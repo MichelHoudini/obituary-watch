@@ -154,12 +154,26 @@ def test_subscribe_filter_page_has_form():
     assert "emailInput" in body, "Campo de email ausente"
 
 
-def test_subscribe_filter_page_uses_backend_proxy():
-    """O JS da página deve chamar o backend proxy (/api/filters/occupations e
-    /api/filters/locations) em vez de chamar Wikidata diretamente do browser.
-    Isso garante que o autocomplete funciona sem CORS e que o teste e2e de XSS
-    pode interceptar a URL local de forma confiável."""
+def test_subscribe_filter_page_searches_wikidata_client_side():
+    """O JS da página deve chamar api.php da Wikidata diretamente do browser
+    (com origin=*), e NAO o backend proxy (/api/filters/occupations e
+    /api/filters/locations).
+
+    Render bloqueia chamadas server-side para wikidata.org/wikipedia.org
+    (mesma restricao documentada para o watcher e para o lookup da home).
+    O backend proxy sempre retorna {"results": []} em producao porque o IP
+    do Render e bloqueado -- funciona em CI e em dev local (IPs diferentes),
+    entao os testes que mockavam httpx.get nunca pegavam isso. Bug real
+    reportado em producao: usuario preenchia o formulario e o autocomplete
+    nunca mostrava nenhum resultado. Ver PR de fix/filter-search-client-side.
+    """
     r = client.get("/subscribe/filter")
     assert r.status_code == 200
-    assert "/api/filters/occupations" in r.text, "Proxy de ocupações ausente no JS"
-    assert "/api/filters/locations" in r.text, "Proxy de localizações ausente no JS"
+    assert "wikidata.org/w/api.php" in r.text, "Busca client-side da Wikidata ausente no JS"
+    assert "origin=*" in r.text, "Chamada à Wikidata precisa de origin=* (CORS)"
+    assert "/api/filters/occupations" not in r.text, (
+        "JS não deve mais chamar o backend proxy — ele sempre falha em produção no Render"
+    )
+    assert "/api/filters/locations" not in r.text, (
+        "JS não deve mais chamar o backend proxy — ele sempre falha em produção no Render"
+    )
