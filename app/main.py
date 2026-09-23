@@ -882,12 +882,22 @@ def subscribe_filter_page(request: Request):
         let t; return function(...a) {{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }};
       }}
 
-      async function searchEntities(q, apiPath) {{
+      async function searchEntities(q) {{
+        // Calls Wikidata directly from the browser (origin=*) instead of
+        // going through our own backend. Render's outbound IPs are blocked
+        // by Wikidata/Wikipedia for server-side requests, so a backend
+        // proxy for this always returns empty results in production even
+        // though it works fine in local dev and in CI (different IPs).
+        // Same pattern as the homepage's wikipedia lookup above.
         if (!q || q.length < 2) return [];
         try {{
-          const r = await fetch(`${{apiPath}}?q=${{encodeURIComponent(q)}}`);
+          const url = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${{encodeURIComponent(q)}}&language=en&type=item&limit=20&format=json&origin=*`;
+          const r = await fetch(url);
           if (!r.ok) return [];
-          return (await r.json()).results || [];
+          const data = await r.json();
+          return (data.search || [])
+            .filter(item => /^Q[0-9]+$/.test(item.id || ''))
+            .map(item => ({{ qid: item.id, label: item.label || '', description: item.description || '' }}));
         }} catch {{ return []; }}
       }}
 
@@ -914,14 +924,14 @@ def subscribe_filter_page(request: Request):
         return ul;
       }}
 
-      function setupAutocomplete(inputId, resultsId, qidId, selectedId, apiPath) {{
+      function setupAutocomplete(inputId, resultsId, qidId, selectedId) {{
         const input = document.getElementById(inputId);
         const resultsDiv = document.getElementById(resultsId);
         const qidField = document.getElementById(qidId);
         const selectedDiv = document.getElementById(selectedId);
 
         const search = debounce(async (q) => {{
-          const items = await searchEntities(q, apiPath);
+          const items = await searchEntities(q);
           resultsDiv.innerHTML = '';
           if (!items.length) {{ resultsDiv.style.display='none'; return; }}
           resultsDiv.appendChild(makeResultList(items, item => {{
@@ -944,8 +954,8 @@ def subscribe_filter_page(request: Request):
         }});
       }}
 
-      setupAutocomplete('occInput', 'occResults', 'occQid', 'occSelected', '/api/filters/occupations');
-      setupAutocomplete('locInput', 'locResults', 'locQid', 'locSelected', '/api/filters/locations');
+      setupAutocomplete('occInput', 'occResults', 'occQid', 'occSelected');
+      setupAutocomplete('locInput', 'locResults', 'locQid', 'locSelected');
 
       async function submitFilterWatch() {{
         const occ = document.getElementById('occQid').value;
